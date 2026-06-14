@@ -125,7 +125,7 @@ sim-install:
 	xcrun simctl install "$$BOOTED" "$$PRODUCTS/$(SCHEME)UITests-Runner.app"; \
 	echo "Installed on simulator $$BOOTED"
 
-# Build, run mocha tests with code coverage
+# Build, run Playwright tests with code coverage
 test-coverage:
 	@rm -rf $(BUILD_DIR)/coverage.xcresult
 	@BOOTED=$$(xcrun simctl list devices booted -j | jq -r '[.devices[][] | select(.state=="Booted")] | first | .udid'); \
@@ -133,9 +133,9 @@ test-coverage:
 
 # Generate HTML coverage report (run after test-coverage)
 coverage-html:
-	@PROFDATA=$$(find $(BUILD_DIR)/local/Build/ProfileData -name "Coverage.profdata" 2>/dev/null | head -1); \
+	@PROFDATA="$(BUILD_DIR)/local/coverage/Coverage.profdata"; \
 	BINARY="$(BUILD_DIR)/local/Build/Products/Debug-iphonesimulator/$(SCHEME)UITests-Runner.app/PlugIns/$(SCHEME)UITests.xctest/$(SCHEME)UITests"; \
-	if [ -z "$$PROFDATA" ] || [ ! -f "$$BINARY" ]; then echo "error: Run 'make test-coverage' first"; exit 1; fi; \
+	if [ ! -f "$$PROFDATA" ] || [ ! -f "$$BINARY" ]; then echo "error: Run 'make test-coverage' first"; exit 1; fi; \
 	rm -rf coverage-html; \
 	xcrun llvm-cov show "$$BINARY" -instr-profile "$$PROFDATA" -format=html -output-dir=coverage-html \
 		-ignore-filename-regex='build/local/SourcePackages|DerivedSources'; \
