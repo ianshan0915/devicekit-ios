@@ -39,22 +39,20 @@ struct IOAppSwitcherMethodHandler: RPCMethodHandler {
 
         logger.info("[Start] app switcher: double home press, gap \(gapMs)ms")
         let start = Date()
-        let firstCompletion = try dispatchHomePress()
+        try dispatchHomePress()
         try await Task.sleep(nanoseconds: UInt64(gapMs) * 1_000_000)
-        let secondCompletion = try dispatchHomePress()
-        for try await _ in firstCompletion {}
-        for try await _ in secondCompletion {}
+        try dispatchHomePress()
         let duration = Date().timeIntervalSince(start)
         logger.info("[Done] app switcher took \(duration)")
 
         return .object(["success": .bool(true), "gapMs": .int(gapMs)])
     }
 
-    /// Builds the same low-level XCDeviceEvent that WebDriverAgent uses, then enqueues
-    /// it through XCTest's asynchronous daemon-session API. The returned stream finishes
-    /// when delivery completes, but the caller deliberately enqueues both presses before
-    /// awaiting either completion so they land inside iOS's double-press window.
-    private func dispatchHomePress() throws -> AsyncThrowingStream<Void, Error> {
+    /// Builds a low-level XCDeviceEvent and dispatches it directly. Going through
+    /// XCUIDevice.performDeviceEvent or XCTRunnerDaemonSession waits for the current
+    /// gesture to complete, which spaces two presses too far apart (or rejects the
+    /// second); XCDeviceEvent.dispatch sends the HID event without that gate.
+    private func dispatchHomePress() throws {
         guard let eventClass = NSClassFromString("XCDeviceEvent") else {
             throw RPCMethodError.internalError("XCDeviceEvent class is unavailable")
         }
@@ -79,49 +77,17 @@ struct IOAppSwitcherMethodHandler: RPCMethodHandler {
             Self.pressDuration
         )
 
-        guard let sessionClass = NSClassFromString("XCTRunnerDaemonSession") else {
-            throw RPCMethodError.internalError("XCTRunnerDaemonSession class is unavailable")
-        }
-        let sharedSelector = NSSelectorFromString("sharedSession")
-        guard sessionClass.responds(to: sharedSelector) else {
+        let dispatchSelector = NSSelectorFromString("dispatch")
+        guard event.responds(to: dispatchSelector) else {
             throw RPCMethodError.internalError(
-                "XCTRunnerDaemonSession does not respond to sharedSession"
+                "XCDeviceEvent does not respond to dispatch"
             )
         }
-        typealias SharedSession = @convention(c) (AnyClass, Selector) -> NSObject
-        let sharedSession = unsafeBitCast(
-            sessionClass.method(for: sharedSelector),
-            to: SharedSession.self
-        )
-        let session = sharedSession(sessionClass, sharedSelector)
-
-        let dispatchSelector = NSSelectorFromString("performDeviceEvent:completion:")
-        guard session.responds(to: dispatchSelector) else {
-            throw RPCMethodError.internalError(
-                "XCTRunnerDaemonSession does not respond to performDeviceEvent:completion:"
-            )
-        }
-        typealias DispatchEvent = @convention(c) (
-            NSObject, Selector, NSObject, @escaping (Bool, Error?) -> Void
-        ) -> Void
+        typealias DispatchEvent = @convention(c) (NSObject, Selector) -> Void
         let dispatchEvent = unsafeBitCast(
-            session.method(for: dispatchSelector),
+            event.method(for: dispatchSelector),
             to: DispatchEvent.self
         )
-
-        return AsyncThrowingStream { continuation in
-            dispatchEvent(session, dispatchSelector, event) { success, error in
-                if let error {
-                    continuation.finish(throwing: error)
-                } else if !success {
-                    continuation.finish(throwing: RPCMethodError.internalError(
-                        "Failed to dispatch home HID event"
-                    ))
-                } else {
-                    continuation.yield(())
-                    continuation.finish()
-                }
-            }
-        }
+        dispatchEvent(event, dispatchSelector)
     }
 }
