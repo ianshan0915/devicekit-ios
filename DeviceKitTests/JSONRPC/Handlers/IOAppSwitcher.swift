@@ -3,10 +3,8 @@ import XCTest
 import os
 
 struct IOAppSwitcherRequest: Codable {
-    /// Milliseconds between the two home presses. iOS's double-press window is roughly
-    /// 300ms, but the value that works through *synthetic* HID injection is empirical —
-    /// exposing it as a param means tuning costs one request instead of a rebuild and a
-    /// pass over every phone in the fleet.
+    /// Kept for wire compatibility with the first implementation. XCTest now represents
+    /// the double-click atomically on XCDeviceEvent, so no host-selected gap is needed.
     let gapMs: Int?
 }
 
@@ -19,40 +17,27 @@ struct IOAppSwitcherMethodHandler: RPCMethodHandler {
     private static let menuUsage: UInt32 = 0x40
     /// How long each synthetic press is held.
     private static let pressDuration = 0.005
-    private static let defaultGapMs = 150
-    private static let maxGapMs = 2000
-
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier!,
         category: String(describing: Self.self)
     )
 
     func execute(params: JSONValue?) async throws -> JSONValue {
-        let request = try decodeParams(IOAppSwitcherRequest.self, from: params)
-        let gapMs = request.gapMs ?? Self.defaultGapMs
-        // Bounds-check before the UInt64 conversion below: a negative value traps, and
-        // a trap kills the runner process — which drops the whole session, not just
-        // this call.
-        guard gapMs >= 0, gapMs <= Self.maxGapMs else {
-            throw RPCMethodError.invalidParams("gapMs must be between 0 and \(Self.maxGapMs)")
-        }
+        _ = try decodeParams(IOAppSwitcherRequest.self, from: params)
 
-        logger.info("[Start] app switcher: double home press, gap \(gapMs)ms")
+        logger.info("[Start] app switcher: atomic double home click")
         let start = Date()
-        try dispatchHomePress()
-        try await Task.sleep(nanoseconds: UInt64(gapMs) * 1_000_000)
-        try dispatchHomePress()
+        try dispatchHomeDoubleClick()
         let duration = Date().timeIntervalSince(start)
         logger.info("[Done] app switcher took \(duration)")
 
-        return .object(["success": .bool(true), "gapMs": .int(gapMs)])
+        return .object(["success": .bool(true), "clicks": .int(2)])
     }
 
-    /// Builds a low-level XCDeviceEvent and dispatches it directly. Going through
-    /// XCUIDevice.performDeviceEvent or XCTRunnerDaemonSession waits for the current
-    /// gesture to complete, which spaces two presses too far apart (or rejects the
-    /// second); XCDeviceEvent.dispatch sends the HID event without that gate.
-    private func dispatchHomePress() throws {
+    /// Represents both clicks on one XCDeviceEvent. Dispatching two separate events via
+    /// XCUIDevice serializes them outside SpringBoard's double-click window, while trying
+    /// to enqueue the second asynchronously is rejected by XCTest's one-gesture gate.
+    private func dispatchHomeDoubleClick() throws {
         guard let eventClass = NSClassFromString("XCDeviceEvent") else {
             throw RPCMethodError.internalError("XCDeviceEvent class is unavailable")
         }
@@ -77,17 +62,38 @@ struct IOAppSwitcherMethodHandler: RPCMethodHandler {
             Self.pressDuration
         )
 
-        let dispatchSelector = NSSelectorFromString("dispatch")
-        guard event.responds(to: dispatchSelector) else {
+        let setClicksSelector = NSSelectorFromString("setClicks:")
+        guard event.responds(to: setClicksSelector) else {
             throw RPCMethodError.internalError(
-                "XCDeviceEvent does not respond to dispatch"
+                "XCDeviceEvent does not respond to setClicks:"
             )
         }
-        typealias DispatchEvent = @convention(c) (NSObject, Selector) -> Void
+        typealias SetClicks = @convention(c) (NSObject, Selector, UInt64) -> Void
+        let setClicks = unsafeBitCast(
+            event.method(for: setClicksSelector),
+            to: SetClicks.self
+        )
+        setClicks(event, setClicksSelector, 2)
+
+        let device = XCUIDevice.shared as NSObject
+        let dispatchSelector = NSSelectorFromString("performDeviceEvent:error:")
+        guard device.responds(to: dispatchSelector) else {
+            throw RPCMethodError.internalError(
+                "XCUIDevice does not respond to performDeviceEvent:error:"
+            )
+        }
+        typealias DispatchEvent = @convention(c) (
+            NSObject, Selector, NSObject, UnsafeMutablePointer<NSError?>?
+        ) -> Bool
         let dispatchEvent = unsafeBitCast(
-            event.method(for: dispatchSelector),
+            device.method(for: dispatchSelector),
             to: DispatchEvent.self
         )
-        dispatchEvent(event, dispatchSelector)
+        var dispatchError: NSError?
+        guard dispatchEvent(device, dispatchSelector, event, &dispatchError) else {
+            throw RPCMethodError.internalError(
+                dispatchError?.localizedDescription ?? "Failed to dispatch home double-click"
+            )
+        }
     }
 }
