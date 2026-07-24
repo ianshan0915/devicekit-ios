@@ -102,7 +102,7 @@ struct IOAppSwitcherMethodHandler: RPCMethodHandler {
             )
         }
         typealias DispatchEvent = @convention(c) (
-            NSObject, Selector, NSObject, @escaping (Error?) -> Void
+            NSObject, Selector, NSObject, @escaping (Bool, Error?) -> Void
         ) -> Void
         let dispatchEvent = unsafeBitCast(
             session.method(for: dispatchSelector),
@@ -110,9 +110,13 @@ struct IOAppSwitcherMethodHandler: RPCMethodHandler {
         )
 
         return AsyncThrowingStream { continuation in
-            dispatchEvent(session, dispatchSelector, event) { error in
+            dispatchEvent(session, dispatchSelector, event) { success, error in
                 if let error {
                     continuation.finish(throwing: error)
+                } else if !success {
+                    continuation.finish(throwing: RPCMethodError.internalError(
+                        "Failed to dispatch home HID event"
+                    ))
                 } else {
                     continuation.yield(())
                     continuation.finish()
