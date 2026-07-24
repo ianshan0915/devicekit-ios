@@ -39,20 +39,22 @@ struct IOAppSwitcherMethodHandler: RPCMethodHandler {
 
         logger.info("[Start] app switcher: double home press, gap \(gapMs)ms")
         let start = Date()
-        try dispatchHomePress()
+        let firstCompletion = try dispatchHomePress()
         try await Task.sleep(nanoseconds: UInt64(gapMs) * 1_000_000)
-        try dispatchHomePress()
+        let secondCompletion = try dispatchHomePress()
+        for try await _ in firstCompletion {}
+        for try await _ in secondCompletion {}
         let duration = Date().timeIntervalSince(start)
         logger.info("[Done] app switcher took \(duration)")
 
         return .object(["success": .bool(true), "gapMs": .int(gapMs)])
     }
 
-    /// Builds the same low-level XCDeviceEvent that WebDriverAgent uses, then asks
-    /// XCUIDevice to deliver it. Unlike `press(.home)`, this path waits only for the HID
-    /// event itself, not for SpringBoard to quiesce, so two calls can land inside iOS's
-    /// double-press window.
-    private func dispatchHomePress() throws {
+    /// Builds the same low-level XCDeviceEvent that WebDriverAgent uses, then enqueues
+    /// it through XCTest's asynchronous daemon-session API. The returned stream finishes
+    /// when delivery completes, but the caller deliberately enqueues both presses before
+    /// awaiting either completion so they land inside iOS's double-press window.
+    private func dispatchHomePress() throws -> AsyncThrowingStream<Void, Error> {
         guard let eventClass = NSClassFromString("XCDeviceEvent") else {
             throw RPCMethodError.internalError("XCDeviceEvent class is unavailable")
         }
@@ -77,25 +79,45 @@ struct IOAppSwitcherMethodHandler: RPCMethodHandler {
             Self.pressDuration
         )
 
-        let device = XCUIDevice.shared as NSObject
-        let dispatchSelector = NSSelectorFromString("performDeviceEvent:error:")
-        guard device.responds(to: dispatchSelector) else {
+        guard let sessionClass = NSClassFromString("XCTRunnerDaemonSession") else {
+            throw RPCMethodError.internalError("XCTRunnerDaemonSession class is unavailable")
+        }
+        let sharedSelector = NSSelectorFromString("sharedSession")
+        guard sessionClass.responds(to: sharedSelector) else {
             throw RPCMethodError.internalError(
-                "XCUIDevice does not respond to performDeviceEvent:error:"
+                "XCTRunnerDaemonSession does not respond to sharedSession"
+            )
+        }
+        typealias SharedSession = @convention(c) (AnyClass, Selector) -> NSObject
+        let sharedSession = unsafeBitCast(
+            sessionClass.method(for: sharedSelector),
+            to: SharedSession.self
+        )
+        let session = sharedSession(sessionClass, sharedSelector)
+
+        let dispatchSelector = NSSelectorFromString("performDeviceEvent:completion:")
+        guard session.responds(to: dispatchSelector) else {
+            throw RPCMethodError.internalError(
+                "XCTRunnerDaemonSession does not respond to performDeviceEvent:completion:"
             )
         }
         typealias DispatchEvent = @convention(c) (
-            NSObject, Selector, NSObject, UnsafeMutablePointer<NSError?>?
-        ) -> Bool
+            NSObject, Selector, NSObject, @escaping (Error?) -> Void
+        ) -> Void
         let dispatchEvent = unsafeBitCast(
-            device.method(for: dispatchSelector),
+            session.method(for: dispatchSelector),
             to: DispatchEvent.self
         )
-        var dispatchError: NSError?
-        guard dispatchEvent(device, dispatchSelector, event, &dispatchError) else {
-            throw RPCMethodError.internalError(
-                dispatchError?.localizedDescription ?? "Failed to dispatch home HID event"
-            )
+
+        return AsyncThrowingStream { continuation in
+            dispatchEvent(session, dispatchSelector, event) { error in
+                if let error {
+                    continuation.finish(throwing: error)
+                } else {
+                    continuation.yield(())
+                    continuation.finish()
+                }
+            }
         }
     }
 }
