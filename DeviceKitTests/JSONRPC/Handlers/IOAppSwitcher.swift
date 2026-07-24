@@ -2,20 +2,6 @@ import Foundation
 import XCTest
 import os
 
-/// XCUIDevice's private low-level HID entry point. It injects a raw HID event and
-/// returns immediately — unlike `press(.home)`, which blocks ~1-1.5s waiting for the
-/// springboard animation to quiesce, far too slow to land two presses inside iOS's
-/// ~300ms double-press window. This is the mechanism WebDriverAgent uses for its
-/// button presses.
-///
-/// `perform(_:)` cannot reach it: that takes at most two *object* arguments, and these
-/// are primitives. An @objc protocol existential is just the object pointer, so
-/// `unsafeBitCast` onto this protocol is the standard way to call it from Swift.
-@objc private protocol HIDEventDispatcher {
-    @objc(_dispatchEventWithPage:usage:duration:)
-    func dispatchEvent(page: UInt32, usage: UInt32, duration: Double)
-}
-
 struct IOAppSwitcherRequest: Codable {
     /// Milliseconds between the two home presses. iOS's double-press window is roughly
     /// 300ms, but the value that works through *synthetic* HID injection is empirical —
@@ -51,27 +37,65 @@ struct IOAppSwitcherMethodHandler: RPCMethodHandler {
             throw RPCMethodError.invalidParams("gapMs must be between 0 and \(Self.maxGapMs)")
         }
 
-        let selector = NSSelectorFromString("_dispatchEventWithPage:usage:duration:")
-        guard XCUIDevice.shared.responds(to: selector) else {
-            // Must not report success: from the host, a silent no-op is
-            // indistinguishable from a working press. An error lets the host fall back
-            // to the Face-ID swipe gesture.
-            throw RPCMethodError.internalError(
-                "XCUIDevice does not respond to _dispatchEventWithPage:usage:duration:"
-            )
-        }
-        let device = unsafeBitCast(XCUIDevice.shared, to: HIDEventDispatcher.self)
-
         logger.info("[Start] app switcher: double home press, gap \(gapMs)ms")
         let start = Date()
-        device.dispatchEvent(
-            page: Self.consumerPage, usage: Self.menuUsage, duration: Self.pressDuration)
+        try dispatchHomePress()
         try await Task.sleep(nanoseconds: UInt64(gapMs) * 1_000_000)
-        device.dispatchEvent(
-            page: Self.consumerPage, usage: Self.menuUsage, duration: Self.pressDuration)
+        try dispatchHomePress()
         let duration = Date().timeIntervalSince(start)
         logger.info("[Done] app switcher took \(duration)")
 
         return .object(["success": .bool(true), "gapMs": .int(gapMs)])
+    }
+
+    /// Builds the same low-level XCDeviceEvent that WebDriverAgent uses, then asks
+    /// XCUIDevice to deliver it. Unlike `press(.home)`, this path waits only for the HID
+    /// event itself, not for SpringBoard to quiesce, so two calls can land inside iOS's
+    /// double-press window.
+    private func dispatchHomePress() throws {
+        guard let eventClass = NSClassFromString("XCDeviceEvent") else {
+            throw RPCMethodError.internalError("XCDeviceEvent class is unavailable")
+        }
+        let makeSelector = NSSelectorFromString("deviceEventWithPage:usage:duration:")
+        guard eventClass.responds(to: makeSelector) else {
+            throw RPCMethodError.internalError(
+                "XCDeviceEvent does not respond to deviceEventWithPage:usage:duration:"
+            )
+        }
+        typealias MakeEvent = @convention(c) (
+            AnyClass, Selector, UInt32, UInt32, Double
+        ) -> NSObject
+        let makeEvent = unsafeBitCast(
+            eventClass.method(for: makeSelector),
+            to: MakeEvent.self
+        )
+        let event = makeEvent(
+            eventClass,
+            makeSelector,
+            Self.consumerPage,
+            Self.menuUsage,
+            Self.pressDuration
+        )
+
+        let device = XCUIDevice.shared as NSObject
+        let dispatchSelector = NSSelectorFromString("performDeviceEvent:error:")
+        guard device.responds(to: dispatchSelector) else {
+            throw RPCMethodError.internalError(
+                "XCUIDevice does not respond to performDeviceEvent:error:"
+            )
+        }
+        typealias DispatchEvent = @convention(c) (
+            NSObject, Selector, NSObject, UnsafeMutablePointer<NSError?>?
+        ) -> Bool
+        let dispatchEvent = unsafeBitCast(
+            device.method(for: dispatchSelector),
+            to: DispatchEvent.self
+        )
+        var dispatchError: NSError?
+        guard dispatchEvent(device, dispatchSelector, event, &dispatchError) else {
+            throw RPCMethodError.internalError(
+                dispatchError?.localizedDescription ?? "Failed to dispatch home HID event"
+            )
+        }
     }
 }
