@@ -198,15 +198,38 @@ async function runAction(name, definition) {
 
   const elapsed = [];
   const synthesis = [];
+  const handler = [];
+  const rttOutsideHandler = [];
+  const runnerTimingValues = new Map();
+  const samples = [];
   const failures = [];
   for (let index = 0; index < options.samples; index += 1) {
     try {
       const sample = await request(definition);
       elapsed.push(sample.elapsedMs);
       const durationSeconds = sample.result?.durationSeconds;
-      const synthesisSeconds = sample.result?.timings?.synthesisSeconds;
+      const timings = sample.result?.timings;
+      const synthesisSeconds = timings?.synthesisSeconds;
       if (Number.isFinite(synthesisSeconds)) synthesis.push(synthesisSeconds * 1000);
       else if (Number.isFinite(durationSeconds)) synthesis.push(durationSeconds * 1000);
+
+      if (timings && typeof timings === "object") {
+        for (const [key, seconds] of Object.entries(timings)) {
+          if (!Number.isFinite(seconds)) continue;
+          const values = runnerTimingValues.get(key) ?? [];
+          values.push(seconds * 1000);
+          runnerTimingValues.set(key, values);
+        }
+        if (Number.isFinite(timings.handlerSeconds)) {
+          const handlerMs = timings.handlerSeconds * 1000;
+          handler.push(handlerMs);
+          rttOutsideHandler.push(sample.elapsedMs - handlerMs);
+        }
+      }
+      samples.push({
+        rttMs: sample.elapsedMs,
+        result: sample.result,
+      });
     } catch (error) {
       failures.push({ sample: index + 1, message: error.message });
     }
@@ -216,7 +239,18 @@ async function runAction(name, definition) {
   const result = {
     rtt: summarize(elapsed),
     runnerSynthesis: synthesis.length ? summarize(synthesis) : null,
+    runnerHandler: handler.length ? summarize(handler) : null,
+    // This is deliberately labelled as a combined remainder: it includes
+    // request parsing/dispatch plus response encoding, HTTP/USB transport, and
+    // client overhead. It must not be presented as any one of those stages.
+    rttOutsideRunnerHandler: rttOutsideHandler.length
+      ? summarize(rttOutsideHandler)
+      : null,
+    runnerTimings: Object.fromEntries(
+      [...runnerTimingValues.entries()].map(([key, values]) => [key, summarize(values)])
+    ),
     failures,
+    samples,
   };
   console.log(`${name.padEnd(7)} p50=${result.rtt.p50Ms?.toFixed(1)} ms  p95=${result.rtt.p95Ms?.toFixed(1)} ms  max=${result.rtt.maxMs?.toFixed(1)} ms  failures=${failures.length}`);
   return result;
