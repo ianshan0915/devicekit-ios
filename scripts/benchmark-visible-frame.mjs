@@ -154,13 +154,21 @@ class FrameReader {
   }
 
   waitForChange(reference, afterSequence, threshold, timeoutMs) {
-    return this.waitFor((event) => (
-      event.sequence > afterSequence
-      && meanAbsoluteDifference(reference, event.frame) >= threshold
-    ), timeoutMs);
+    let observedFrames = 0;
+    let maximumDelta = 0;
+    return this.waitFor((event) => {
+      if (event.sequence <= afterSequence) return false;
+      observedFrames += 1;
+      const delta = meanAbsoluteDifference(reference, event.frame);
+      maximumDelta = Math.max(maximumDelta, delta);
+      return delta >= threshold;
+    }, timeoutMs, () => (
+      `no changed frame within ${timeoutMs} ms; `
+      + `observed=${observedFrames}, maxMeanDelta=${maximumDelta.toFixed(2)}`
+    ));
   }
 
-  waitFor(predicate, timeoutMs) {
+  waitFor(predicate, timeoutMs, timeoutMessage = () => `no frame within ${timeoutMs} ms`) {
     return new Promise((resolve, reject) => {
       const listener = (event) => {
         if (!predicate(event)) return;
@@ -170,7 +178,7 @@ class FrameReader {
       };
       const timer = setTimeout(() => {
         this.listeners.delete(listener);
-        reject(new Error(`no changed frame within ${timeoutMs} ms`));
+        reject(new Error(timeoutMessage()));
       }, timeoutMs);
       this.listeners.add(listener);
     });
@@ -209,7 +217,9 @@ h264Url.searchParams.set("quality", "80");
 
 const ffmpeg = spawn(options.ffmpeg, [
   "-hide_banner", "-loglevel", "warning",
-  "-fflags", "nobuffer", "-flags", "low_delay",
+  // FFmpeg's raw-H264 `nobuffer` mode emitted the first decoded frame but then
+  // stalled on DeviceKit's stream in live canary testing. Normal buffering is
+  // deterministic enough for before/after comparison and keeps frames flowing.
   "-f", "h264", "-i", h264Url.toString(),
   "-vf", `scale=${FrameReader.width}:${FrameReader.height},format=gray`,
   "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1",
