@@ -7,6 +7,11 @@ final class EventRecord: NSObject {
 
     static let defaultTapDuration = 0.1
 
+    /// Short enough to make ordinary remote taps responsive while remaining
+    /// above the lowest plateau measured reliably on physical iPhones. Swipe
+    /// and gesture timing intentionally keep `defaultTapDuration`.
+    static let remoteTapDuration = 0.01
+
     enum Style: String {
         case singleFinger = "Single-Finger Touch Action"
         case multiFinger = "Multi-Finger Touch Action"

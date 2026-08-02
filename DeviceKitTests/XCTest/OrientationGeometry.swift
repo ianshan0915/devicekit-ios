@@ -57,46 +57,4 @@ struct OrientationGeometry {
         }
     }
 
-    private static func actualOrientation() -> UIDeviceOrientation {
-        let orientation = XCUIDevice.shared.orientation
-        if orientation == .unknown {
-            return UIDeviceOrientation.portrait
-        }
-
-        return orientation
-    }
-
-    static func orientationAwarePoint(
-        width: Float,
-        height: Float,
-        point: CGPoint
-    ) -> CGPoint {
-        let orientation = actualOrientation()
-
-        switch orientation {
-        case .portrait:
-            return point
-
-        case .landscapeLeft:
-            return CGPoint(
-                x: CGFloat(width) - point.y,
-                y: point.x
-            )
-
-        case .landscapeRight:
-            return CGPoint(
-                x: point.y,
-                y: CGFloat(height) - point.x
-            )
-
-        case .portraitUpsideDown,
-            .faceUp,
-            .faceDown,
-            .unknown:
-            return point
-
-        @unknown default:
-            return point
-        }
-    }
 }

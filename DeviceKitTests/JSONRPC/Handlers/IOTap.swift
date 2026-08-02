@@ -22,11 +22,9 @@ struct IOTapMethodHandler: RPCMethodHandler {
     func execute(params: JSONValue?) async throws -> JSONValue {
         let request = try decodeParams(IOTapRequest.self, from: params)
 
-        let (width, height) = OrientationGeometry.physicalScreenSize()
-        let point = OrientationGeometry.orientationAwarePoint(
-            width: width,
-            height: height,
-            point: CGPoint(x: CGFloat(request.x), y: CGFloat(request.y))
+        let point = StreamCoordinateSpace.point(
+            x: CGFloat(request.x),
+            y: CGFloat(request.y)
         )
 
         let tapCount = request.count ?? 1
@@ -43,6 +41,7 @@ struct IOTapMethodHandler: RPCMethodHandler {
                 let springboard = XCUIApplication(
                     bundleIdentifier: "com.apple.springboard"
                 )
+                let (width, height) = OrientationGeometry.physicalScreenSize()
                 let normalized = CGVector(
                     dx: point.x / CGFloat(width),
                     dy: point.y / CGFloat(height)
@@ -62,7 +61,7 @@ struct IOTapMethodHandler: RPCMethodHandler {
             let eventRecord = EventRecord(orientation: .portrait)
             _ = eventRecord.addPointerTouchEvent(
                 at: point,
-                touchUpAfter: nil
+                touchUpAfter: EventRecord.remoteTapDuration
             )
             try await RunnerDaemonProxy().synthesize(eventRecord: eventRecord)
             let duration = Date().timeIntervalSince(start)
