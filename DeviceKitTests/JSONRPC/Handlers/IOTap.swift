@@ -34,14 +34,12 @@ struct IOTapMethodHandler: RPCMethodHandler {
         let handlerStart = ContinuousClock.now
         let request = try decodeParams(IOTapRequest.self, from: params)
 
-        let screenLookupStart = ContinuousClock.now
-        let (width, height) = OrientationGeometry.physicalScreenSize()
-        let point = OrientationGeometry.orientationAwarePoint(
-            width: width,
-            height: height,
-            point: CGPoint(x: CGFloat(request.x), y: CGFloat(request.y))
+        let coordinateResolutionStart = ContinuousClock.now
+        let point = StreamCoordinateSpace.point(
+            x: CGFloat(request.x),
+            y: CGFloat(request.y)
         )
-        let screenLookupDuration = screenLookupStart.duration(to: .now)
+        let coordinateResolutionDuration = coordinateResolutionStart.duration(to: .now)
 
         let tapCount = request.count ?? 1
         guard tapCount == 1 || tapCount == 2 else {
@@ -70,6 +68,7 @@ struct IOTapMethodHandler: RPCMethodHandler {
                 let springboard = XCUIApplication(
                     bundleIdentifier: "com.apple.springboard"
                 )
+                let (width, height) = OrientationGeometry.physicalScreenSize()
                 let normalized = CGVector(
                     dx: point.x / CGFloat(width),
                     dy: point.y / CGFloat(height)
@@ -126,7 +125,9 @@ struct IOTapMethodHandler: RPCMethodHandler {
                     "backend": .string(backend.rawValue),
                 ]),
                 "timings": .object([
-                    "screenLookupSeconds": .double(screenLookupDuration.seconds),
+                    "coordinateResolutionSeconds": .double(
+                        coordinateResolutionDuration.seconds
+                    ),
                     "eventConstructionSeconds": .double(constructionDuration.seconds),
                     "proxyAcquisitionSeconds": .double(proxyDuration.seconds),
                     "synthesisSeconds": .double(synthesisDuration.seconds),

@@ -153,15 +153,11 @@ struct IOGestureMethodHandler: RPCMethodHandler {
 
         let eventRecord = EventRecord(orientation: .portrait, style: style)
 
-        let (screenWidth, screenHeight) = OrientationGeometry.physicalScreenSize()
-
         for (fingerIndex, actions) in fingerActions.sorted(by: { $0.key < $1.key }) {
             logger.info("Building path for finger \(fingerIndex) with \(actions.count) actions")
             try buildFingerPath(
                 actions: actions,
                 fingerIndex: fingerIndex,
-                screenWidth: screenWidth,
-                screenHeight: screenHeight,
                 eventRecord: eventRecord
             )
         }
@@ -173,18 +169,15 @@ struct IOGestureMethodHandler: RPCMethodHandler {
     private func buildFingerPath(
         actions: [Action],
         fingerIndex: Int,
-        screenWidth: Float,
-        screenHeight: Float,
         eventRecord: EventRecord
     ) throws {
         guard let pressAction = actions.first else {
             throw RPCMethodError.invalidParams("Finger \(fingerIndex) has no actions")
         }
 
-        let initialPoint = OrientationGeometry.orientationAwarePoint(
-            width: screenWidth,
-            height: screenHeight,
-            point: CGPoint(x: CGFloat(pressAction.x), y: CGFloat(pressAction.y))
+        let initialPoint = StreamCoordinateSpace.point(
+            x: CGFloat(pressAction.x),
+            y: CGFloat(pressAction.y)
         )
 
         var currentOffset: TimeInterval = 0
@@ -194,10 +187,9 @@ struct IOGestureMethodHandler: RPCMethodHandler {
         currentOffset += max(pressAction.duration, Self.minimumPressHoldDuration)
 
         for action in actions.dropFirst() {
-            let point = OrientationGeometry.orientationAwarePoint(
-                width: screenWidth,
-                height: screenHeight,
-                point: CGPoint(x: CGFloat(action.x), y: CGFloat(action.y))
+            let point = StreamCoordinateSpace.point(
+                x: CGFloat(action.x),
+                y: CGFloat(action.y)
             )
 
             guard let actionType = ActionType(rawValue: action.type) else {

@@ -25,8 +25,14 @@ struct IOSwipeMethodHandler: RPCMethodHandler {
 
         do {
             try await swipePrivateAPI(
-                start: CGPoint(x: request.x1, y: request.y1),
-                end: CGPoint(x: request.x2, y: request.y2),
+                start: StreamCoordinateSpace.point(
+                    x: CGFloat(request.x1),
+                    y: CGFloat(request.y1)
+                ),
+                end: StreamCoordinateSpace.point(
+                    x: CGFloat(request.x2),
+                    y: CGFloat(request.y2)
+                ),
                 duration: Constants.defaultSwipeDuration
             )
 
