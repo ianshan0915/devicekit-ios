@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 import os
 
@@ -31,15 +32,17 @@ struct IOTapMethodHandler: RPCMethodHandler {
     )
 
     func execute(params: JSONValue?) async throws -> JSONValue {
-        let handlerStart = ContinuousClock.now
+        let handlerStart = monotonicTime()
         let request = try decodeParams(IOTapRequest.self, from: params)
 
-        let coordinateResolutionStart = ContinuousClock.now
+        let coordinateResolutionStart = monotonicTime()
         let point = StreamCoordinateSpace.point(
             x: CGFloat(request.x),
             y: CGFloat(request.y)
         )
-        let coordinateResolutionDuration = coordinateResolutionStart.duration(to: .now)
+        let coordinateResolutionDuration = elapsedSeconds(
+            since: coordinateResolutionStart
+        )
 
         let tapCount = request.count ?? 1
         guard tapCount == 1 || tapCount == 2 else {
@@ -85,16 +88,16 @@ struct IOTapMethodHandler: RPCMethodHandler {
                 ])
             }
 
-            let constructionStart = ContinuousClock.now
+            let constructionStart = monotonicTime()
             let eventRecord = EventRecord(orientation: .portrait)
             _ = eventRecord.addPointerTouchEvent(
                 at: point,
                 touchUpAfter: nil,
                 defaultDuration: Double(durationMilliseconds) / 1_000
             )
-            let constructionDuration = constructionStart.duration(to: .now)
+            let constructionDuration = elapsedSeconds(since: constructionStart)
 
-            let proxyStart = ContinuousClock.now
+            let proxyStart = monotonicTime()
             let cachedProxy: RunnerDaemonProxy?
             switch backend {
             case .daemonFresh:
@@ -104,9 +107,9 @@ struct IOTapMethodHandler: RPCMethodHandler {
             case .deviceSynthesizer:
                 cachedProxy = nil
             }
-            let proxyDuration = proxyStart.duration(to: .now)
+            let proxyDuration = elapsedSeconds(since: proxyStart)
 
-            let synthesisStart = ContinuousClock.now
+            let synthesisStart = monotonicTime()
             if let cachedProxy {
                 try await cachedProxy.synthesize(eventRecord: eventRecord)
             } else {
@@ -114,10 +117,10 @@ struct IOTapMethodHandler: RPCMethodHandler {
                     eventRecord: eventRecord
                 )
             }
-            let synthesisDuration = synthesisStart.duration(to: .now)
+            let synthesisDuration = elapsedSeconds(since: synthesisStart)
             let duration = Date().timeIntervalSince(start)
             logger.info("Tapping took \(duration)")
-            let totalDuration = handlerStart.duration(to: .now)
+            let totalDuration = elapsedSeconds(since: handlerStart)
             return .object([
                 "success": .bool(true),
                 "experimental": .object([
@@ -126,12 +129,12 @@ struct IOTapMethodHandler: RPCMethodHandler {
                 ]),
                 "timings": .object([
                     "coordinateResolutionSeconds": .double(
-                        coordinateResolutionDuration.seconds
+                        coordinateResolutionDuration
                     ),
-                    "eventConstructionSeconds": .double(constructionDuration.seconds),
-                    "proxyAcquisitionSeconds": .double(proxyDuration.seconds),
-                    "synthesisSeconds": .double(synthesisDuration.seconds),
-                    "handlerSeconds": .double(totalDuration.seconds),
+                    "eventConstructionSeconds": .double(constructionDuration),
+                    "proxyAcquisitionSeconds": .double(proxyDuration),
+                    "synthesisSeconds": .double(synthesisDuration),
+                    "handlerSeconds": .double(totalDuration),
                 ]),
             ])
         } catch {
@@ -143,10 +146,10 @@ struct IOTapMethodHandler: RPCMethodHandler {
     }
 }
 
-private extension Duration {
-    var seconds: Double {
-        let components = self.components
-        return Double(components.seconds)
-            + Double(components.attoseconds) / 1_000_000_000_000_000_000
-    }
+private func monotonicTime() -> UInt64 {
+    clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
+}
+
+private func elapsedSeconds(since start: UInt64) -> Double {
+    Double(monotonicTime() - start) / 1_000_000_000
 }
