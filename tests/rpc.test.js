@@ -113,20 +113,20 @@ describe("device.apps.launch and device.apps.terminate", function () {
 // ---------------------------------------------------------------------------
 describe("device.io.tap", function () {
   it("taps at coordinates", async function () {
-    const result = returnsResult(await rpc("device.io.tap", { x: 100, y: 100 }));
+    const result = returnsResult(await rpc("device.io.tap", { x: 10, y: 10 }));
     assert.ok(result);
   });
 
   it("double-taps atomically at coordinates", async function () {
     const result = returnsResult(await rpc("device.io.tap", {
-      x: 100, y: 100, count: 2,
+      x: 10, y: 10, count: 2,
     }));
     assert.strictEqual(result.count, 2);
   });
 
   it("rejects unsupported tap counts", async function () {
     const error = returnsError(await rpc("device.io.tap", {
-      x: 100, y: 100, count: 3,
+      x: 10, y: 10, count: 3,
     }));
     assert.ok(error.code);
   });
@@ -160,7 +160,7 @@ describe("device.io.swipe", function () {
 describe("device.io.longpress", function () {
   it("long presses at coordinates", async function () {
     const result = returnsResult(await rpc("device.io.longpress", {
-      x: 100, y: 100, duration: 0.5,
+      x: 10, y: 10, duration: 0.5,
     }));
     assert.ok(result);
   });
@@ -178,8 +178,8 @@ describe("device.io.gesture", function () {
   it("performs a tap gesture via actions", async function () {
     const result = returnsResult(await rpc("device.io.gesture", {
       actions: [
-        { type: "press", x: 150, y: 150, duration: 0, button: 0 },
-        { type: "release", x: 150, y: 150, duration: 0.1, button: 0 },
+        { type: "press", x: 10, y: 10, duration: 0, button: 0 },
+        { type: "release", x: 10, y: 10, duration: 0.1, button: 0 },
       ],
     }));
     assert.ok(result);
