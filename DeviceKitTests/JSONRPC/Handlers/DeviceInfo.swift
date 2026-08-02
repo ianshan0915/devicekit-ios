@@ -28,7 +28,13 @@ struct DeviceInfoMethodHandler: RPCMethodHandler {
         ])
         return .object([
             "screenSize": screenSize,
-            "scale": .double(Double(scale))
+            "scale": .double(Double(scale)),
+            // Host bridges use this explicit capability before sending count=2.
+            // Older runners ignore unknown request fields and would otherwise turn
+            // an atomic double tap into a dangerous single tap.
+            "capabilities": .array([
+                .string("io.tap.count.2")
+            ])
         ])
     }
 }

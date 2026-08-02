@@ -46,6 +46,8 @@ describe("device.info", function () {
     assert.ok(result.screenSize.height > 0);
     assert.ok(typeof result.scale === "number");
     assert.ok(result.scale > 0);
+    assert.ok(Array.isArray(result.capabilities));
+    assert.ok(result.capabilities.includes("io.tap.count.2"));
   });
 
   it("ignores extra params", async function () {
@@ -113,6 +115,20 @@ describe("device.io.tap", function () {
   it("taps at coordinates", async function () {
     const result = returnsResult(await rpc("device.io.tap", { x: 100, y: 100 }));
     assert.ok(result);
+  });
+
+  it("double-taps atomically at coordinates", async function () {
+    const result = returnsResult(await rpc("device.io.tap", {
+      x: 100, y: 100, count: 2,
+    }));
+    assert.strictEqual(result.count, 2);
+  });
+
+  it("rejects unsupported tap counts", async function () {
+    const error = returnsError(await rpc("device.io.tap", {
+      x: 100, y: 100, count: 3,
+    }));
+    assert.ok(error.code);
   });
 
   it("fails without coordinates", async function () {
