@@ -12,8 +12,6 @@ Options:
   --samples N          Measured sequential requests per action (default: 30)
   --warmup N           Warm-up requests per action (default: 5)
   --tap X,Y            Safe tap point in visible stream points (default: 10,10)
-  --tap-duration-ms N  Experimental touch duration sent with each tap
-  --tap-backend NAME   Experimental daemonFresh, daemonCached, or deviceSynthesizer
   --swipe X1,Y1,X2,Y2  Safe swipe coordinates (default: 10,10,10,10)
   --actions LIST       Comma-separated health,info,tap,home,swipe (default: all)
   --output PATH        Also write the complete JSON result to PATH
@@ -43,8 +41,6 @@ const options = {
   samples: 30,
   warmup: 5,
   tap: [10, 10],
-  tapDurationMs: undefined,
-  tapBackend: undefined,
   swipe: [10, 10, 10, 10],
   actions: ["health", "info", "tap", "home", "swipe"],
   output: undefined,
@@ -61,8 +57,6 @@ for (let index = 2; index < process.argv.length; index += 1) {
     case "--samples": options.samples = parseInteger(value, key, 1); break;
     case "--warmup": options.warmup = parseInteger(value, key); break;
     case "--tap": options.tap = parsePoint(value, 2, key); break;
-    case "--tap-duration-ms": options.tapDurationMs = parseInteger(value, key, 1); break;
-    case "--tap-backend": options.tapBackend = value; break;
     case "--swipe": options.swipe = parsePoint(value, 4, key); break;
     case "--actions": options.actions = value.split(",").filter(Boolean); break;
     case "--output": options.output = value; break;
@@ -79,12 +73,6 @@ const definitions = {
     params: {
       x: options.tap[0],
       y: options.tap[1],
-      ...(options.tapDurationMs === undefined ? {} : {
-        experimentalDurationMilliseconds: options.tapDurationMs,
-      }),
-      ...(options.tapBackend === undefined ? {} : {
-        experimentalBackend: options.tapBackend,
-      }),
     },
   },
   home: { rpc: "device.io.button", params: { button: "home" } },

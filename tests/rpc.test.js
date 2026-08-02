@@ -131,30 +131,6 @@ describe("device.io.tap", function () {
     assert.ok(error.code);
   });
 
-  it("accepts experimental tap latency controls", async function () {
-    const result = returnsResult(await rpc("device.io.tap", {
-      x: 10,
-      y: 10,
-      experimentalDurationMilliseconds: 20,
-      experimentalBackend: "daemonCached",
-    }));
-    assert.strictEqual(result.experimental.durationMilliseconds, 20);
-    assert.strictEqual(result.experimental.backend, "daemonCached");
-    assert.ok(result.timings.synthesisSeconds > 0);
-  });
-
-  it("rejects invalid experimental tap latency controls", async function () {
-    const durationError = returnsError(await rpc("device.io.tap", {
-      x: 10, y: 10, experimentalDurationMilliseconds: 0,
-    }));
-    assert.ok(durationError.code);
-
-    const backendError = returnsError(await rpc("device.io.tap", {
-      x: 10, y: 10, experimentalBackend: "unknown",
-    }));
-    assert.ok(backendError.code);
-  });
-
   it("fails without coordinates", async function () {
     const error = returnsError(await rpc("device.io.tap"));
     assert.ok(error.code);

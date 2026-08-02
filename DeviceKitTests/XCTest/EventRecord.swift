@@ -7,6 +7,11 @@ final class EventRecord: NSObject {
 
     static let defaultTapDuration = 0.1
 
+    /// Short enough to make ordinary remote taps responsive while remaining
+    /// above the lowest plateau measured reliably on physical iPhones. Swipe
+    /// and gesture timing intentionally keep `defaultTapDuration`.
+    static let remoteTapDuration = 0.01
+
     enum Style: String {
         case singleFinger = "Single-Finger Touch Action"
         case multiFinger = "Multi-Finger Touch Action"
@@ -23,15 +28,11 @@ final class EventRecord: NSObject {
             .takeUnretainedValue() as! NSObject
     }
 
-    func addPointerTouchEvent(
-        at point: CGPoint,
-        touchUpAfter: TimeInterval?,
-        defaultDuration: TimeInterval = EventRecord.defaultTapDuration
-    )
+    func addPointerTouchEvent(at point: CGPoint, touchUpAfter: TimeInterval?)
         -> Self
     {
         var path = PointerEventPath.pathForTouch(at: point)
-        path.offset += touchUpAfter ?? defaultDuration
+        path.offset += touchUpAfter ?? Self.defaultTapDuration
         path.liftUp()
         return add(path)
     }
