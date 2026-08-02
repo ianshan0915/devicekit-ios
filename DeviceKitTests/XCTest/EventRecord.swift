@@ -23,11 +23,15 @@ final class EventRecord: NSObject {
             .takeUnretainedValue() as! NSObject
     }
 
-    func addPointerTouchEvent(at point: CGPoint, touchUpAfter: TimeInterval?)
+    func addPointerTouchEvent(
+        at point: CGPoint,
+        touchUpAfter: TimeInterval?,
+        defaultDuration: TimeInterval = EventRecord.defaultTapDuration
+    )
         -> Self
     {
         var path = PointerEventPath.pathForTouch(at: point)
-        path.offset += touchUpAfter ?? Self.defaultTapDuration
+        path.offset += touchUpAfter ?? defaultDuration
         path.liftUp()
         return add(path)
     }

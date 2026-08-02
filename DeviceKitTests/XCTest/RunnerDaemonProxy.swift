@@ -1,7 +1,10 @@
 import Foundation
+import XCTest
 
 @MainActor
 class RunnerDaemonProxy {
+    static let shared = RunnerDaemonProxy()
+
     private let proxy: NSObject
 
     init() {
@@ -64,6 +67,56 @@ class RunnerDaemonProxy {
                         continuation.resume(with: .failure(error))
                     } else {
                         continuation.resume(with: .success(()))
+                    }
+                }
+            )
+        }
+    }
+
+    /// Current WebDriverAgent uses XCUIDevice's event synthesizer instead of
+    /// calling the runner-daemon proxy directly. Keep this as an experimental
+    /// alternative until canary measurements establish whether it is faster
+    /// and equally reliable on our supported iOS versions.
+    static func synthesizeWithDevice(
+        eventRecord: EventRecord
+    ) async throws {
+        let device = XCUIDevice.shared as NSObject
+        let eventSynthesizerSelector = NSSelectorFromString("eventSynthesizer")
+        guard device.responds(to: eventSynthesizerSelector),
+              let synthesizer = device
+                .perform(eventSynthesizerSelector)?
+                .takeUnretainedValue() as? NSObject else {
+            throw RPCMethodError.internalError(
+                "XCUIDevice event synthesizer is unavailable"
+            )
+        }
+
+        let selector = NSSelectorFromString("synthesizeEvent:completion:")
+        guard synthesizer.responds(to: selector) else {
+            throw RPCMethodError.internalError(
+                "XCUIDevice event synthesizer cannot synthesize events"
+            )
+        }
+        let imp = synthesizer.method(for: selector)
+        typealias Method = @convention(c) (
+            NSObject,
+            Selector,
+            NSObject,
+            @escaping (Bool, Error?) -> Void
+        ) -> Void
+        let method = unsafeBitCast(imp, to: Method.self)
+
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
+            method(
+                synthesizer,
+                selector,
+                eventRecord.eventRecord,
+                { _, error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume()
                     }
                 }
             )
