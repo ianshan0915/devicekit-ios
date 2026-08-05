@@ -39,7 +39,15 @@ struct DeviceInfoMethodHandler: RPCMethodHandler {
                 // phone actually carries (the prepare script warns experimental
                 // runners must advertise their own capability).
                 .string("io.devicefarm.dupframe.suppress")
-            ])
+            ]),
+            // R2: the exact runner commit this build was compiled from, injected
+            // into the built bundle's Info.plist by prepare-ios-devicekit.sh.
+            // Lets Mac/Windows comparisons prove both sides ran the same runner
+            // instead of guessing from capabilities.
+            "commitSHA": .string(
+                (Bundle.main.object(forInfoDictionaryKey: "DeviceKitCommitSHA") as? String)
+                    ?? "unknown"
+            )
         ])
     }
 }
