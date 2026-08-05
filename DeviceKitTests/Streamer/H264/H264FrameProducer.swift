@@ -40,7 +40,14 @@ final class H264FrameProducer: @unchecked Sendable {
     private var captureTick: UInt64 = 0       // capture counter used for timestamps
 
     private static let forcedFrameIntervalNs: UInt64 = 1_000_000_000  // 1 s floor
-    private static let maxChangedByteRatio: Double = 0.0005           // 0.05% tolerance
+    // Defensive epsilon only: captures are byte-deterministic on static screens
+    // (JPEG + GPU scale of identical input), so any *visible* change must stream
+    // immediately. 0.001% of the scaled buffer is ~7-8 pixels — small enough
+    // that every visible UI element (typing caret, thin progress bar, small
+    // spinner) exceeds it, while a sub-pixel capture hiccup would not. The
+    // earlier 0.05% was too coarse: it could swallow a caret blink for up to a
+    // second on the actively-used phone.
+    private static let maxChangedByteRatio: Double = 0.00001
 
     // Periodic on-device counters, logged every interval so a session can see
     // from device logs whether suppression is actually engaging.
