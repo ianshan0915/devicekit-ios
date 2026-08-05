@@ -33,7 +33,12 @@ struct DeviceInfoMethodHandler: RPCMethodHandler {
             // Older runners ignore unknown request fields and would otherwise turn
             // an atomic double tap into a dangerous single tap.
             "capabilities": .array([
-                .string("io.tap.count.2")
+                .string("io.tap.count.2"),
+                // S08 experimental build marker: identifies a canary runner with
+                // duplicate-frame suppression so device.info can confirm what a
+                // phone actually carries (the prepare script warns experimental
+                // runners must advertise their own capability).
+                .string("io.devicefarm.dupframe.suppress")
             ])
         ])
     }

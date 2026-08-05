@@ -351,16 +351,27 @@ public final class H264Encoder: NSObject {
 
     public func encode(
         pixelBuffer: CVPixelBuffer,
-        timestamp: CMTime
+        timestamp: CMTime,
+        forceKeyframe: Bool = false
     ) {
         guard let session = session else { return }
+
+        // S08 duplicate-frame suppression feeds frames only when content changes
+        // (plus one forced frame per second). The encoder's natural keyframe
+        // interval is counted in frames, so sparse input would stretch the IDR
+        // cadence to many seconds. Forcing the keyframe here preserves the ~1/s
+        // IDR cadence of the reviewed runner: a late-joining viewer or the
+        // bridge's awaiting-idr handoff still gets a keyframe within ~1 s.
+        let frameProperties: CFDictionary? = forceKeyframe
+            ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary
+            : nil
 
         VTCompressionSessionEncodeFrame(
             session,
             imageBuffer: pixelBuffer,
             presentationTimeStamp: timestamp,
             duration: CMTime.invalid,
-            frameProperties: nil,
+            frameProperties: frameProperties,
             sourceFrameRefcon: nil,
             infoFlagsOut: nil
         )

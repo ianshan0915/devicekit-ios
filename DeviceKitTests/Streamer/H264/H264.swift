@@ -23,13 +23,15 @@ struct H264HTTPStreamConfig: Sendable {
     let bitrate: Int
     let quality: Float
     let scale: Float
+    let suppressDuplicates: Bool
     let frameInterval: UInt64
 
-    init(fps: Int, bitrate: Int, quality: Float, scale: Float) {
+    init(fps: Int, bitrate: Int, quality: Float, scale: Float, suppressDuplicates: Bool = true) {
         self.fps = fps
         self.bitrate = bitrate
         self.quality = quality
         self.scale = scale
+        self.suppressDuplicates = suppressDuplicates
         self.frameInterval = UInt64(1_000_000_000 / max(1, fps))
     }
 }
@@ -48,10 +50,13 @@ struct H264HTTPHandler: HTTPHandler {
         let quality = Float(request.queryInt(name: "quality", default: H264Constants.defaultQuality, min: 1, max: 100)) / 100.0
         let scalePercent = request.queryInt(name: "scale", default: H264Constants.defaultScale, min: H264Constants.minScale, max: H264Constants.maxScale)
         let scale = Float(scalePercent) / 100.0
+        // S08 experiment knob: dup=0 disables duplicate-frame suppression so the
+        // same canary build can reproduce the reviewed runner's behavior.
+        let suppressDuplicates = request.queryInt(name: "dup", default: 1, min: 0, max: 1) != 0
 
-        logger.info("Starting H264 stream: scale=\(scalePercent)% @ \(fps)fps, \(bitrate/1_000_000)Mbps")
+        logger.info("Starting H264 stream: scale=\(scalePercent)% @ \(fps)fps, \(bitrate/1_000_000)Mbps, dup=\(suppressDuplicates ? "on" : "off")")
 
-        let config = H264HTTPStreamConfig(fps: fps, bitrate: bitrate, quality: quality, scale: scale)
+        let config = H264HTTPStreamConfig(fps: fps, bitrate: bitrate, quality: quality, scale: scale, suppressDuplicates: suppressDuplicates)
         let stream = H264ByteStream(config: config)
         let bodySequence = HTTPBodySequence(from: stream)
 
@@ -94,7 +99,7 @@ final class H264ByteIterator: AsyncBufferedIteratorProtocol, @unchecked Sendable
 
     init(config: H264HTTPStreamConfig) {
         self.config = config
-        self.frameProducer = H264FrameProducer()
+        self.frameProducer = H264FrameProducer(suppressDuplicates: config.suppressDuplicates)
 
         let stream = frameProducer.makeNALUnitStream()
         self.naluStream = stream
