@@ -1,6 +1,7 @@
 import CoreImage
 import CoreMedia
 import H264Codec
+import Metal
 import os
 
 enum H264Error: Error, LocalizedError {
@@ -20,8 +21,24 @@ enum H264Error: Error, LocalizedError {
 final class H264FrameProducer: @unchecked Sendable {
     private let captureTimeout: TimeInterval = 0.5
 
+    // Created once per process, and Metal-backed. `CIContext(options:)` with
+    // useSoftwareRenderer:false selects an EAGL-backed GL context on iOS 15,
+    // whose init dereferences null when the GPU refuses the allocation under
+    // memory pressure — an uncatchable SIGSEGV inside Core Image rather than a
+    // failure we can handle. Building one per stream also churned a GPU-backed
+    // context on every reconnect, which fed the pressure that triggered it.
+    private static let sharedCIContext: CIContext = {
+        if let device = MTLCreateSystemDefaultDevice() {
+            return CIContext(mtlDevice: device, options: [.highQualityDownsample: false])
+        }
+        return CIContext(options: [
+            .useSoftwareRenderer: true,
+            .highQualityDownsample: false
+        ])
+    }()
+
     private var encoder: H264Encoder?
-    private var ciContext: CIContext?
+    private let ciContext = H264FrameProducer.sharedCIContext
     private var pixelBufferPool: CVPixelBufferPool?
     private var targetSize: CGSize?
     private var isConfigured = false
@@ -82,6 +99,14 @@ final class H264FrameProducer: @unchecked Sendable {
 
     func invalidateEncoder() {
         encoder?.invalidateCompressionSession()
+        // Drop the per-stream media buffers with the session. `isConfigured`
+        // deliberately stays true: an in-flight @MainActor capture then hits the
+        // `encoder` guard and throws encoderNotConfigured instead of racing into
+        // a reconfigure — this type is @unchecked Sendable and invalidation can
+        // run off the main actor, so the dead state has to stay dead.
+        encoder = nil
+        pixelBufferPool = nil
+        referenceData = nil
         continuation?.finish()
         continuation = nil
     }
@@ -113,8 +138,7 @@ final class H264FrameProducer: @unchecked Sendable {
             )
         }
 
-        guard let ciContext = ciContext,
-              let targetSize = targetSize,
+        guard let targetSize = targetSize,
               let encoder = encoder else {
             throw H264Error.encoderNotConfigured
         }
@@ -260,11 +284,6 @@ final class H264FrameProducer: @unchecked Sendable {
         targetSize = CGSize(width: scaledWidth, height: scaledHeight)
 
         logger.info("Encoder: \(scaledWidth)x\(scaledHeight) @ \(fps)fps, \(bitrate/1_000_000)Mbps")
-
-        ciContext = CIContext(options: [
-            .useSoftwareRenderer: false,
-            .highQualityDownsample: false
-        ])
 
         pixelBufferPool = CGImage.createPixelBufferPool(
             size: targetSize!,
