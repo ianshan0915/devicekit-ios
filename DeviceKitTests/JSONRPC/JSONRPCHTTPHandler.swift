@@ -12,11 +12,13 @@ struct JSONRPCHTTPHandler: HTTPHandler {
 
     func handleRequest(_ request: HTTPRequest) async throws -> HTTPResponse {
         let bodyData = try await request.bodyData
-        NSLog("Received HTTP JSON-RPC request: \(String(data: bodyData, encoding: .utf8)?.prefix(200) ?? "")...")
+        // RPC bodies may contain clipboard text, screenshots or uploaded files.
+        // Logging only the size keeps customer data out of on-device logs.
+        NSLog("Received HTTP JSON-RPC request (\(bodyData.count) bytes)")
 
         let responseData = await dispatcher.dispatch(bodyData)
 
-        NSLog("Sending HTTP JSON-RPC response: \(String(data: responseData, encoding: .utf8)?.prefix(200) ?? "")...")
+        NSLog("Sending HTTP JSON-RPC response (\(responseData.count) bytes)")
 
         return HTTPResponse(
             statusCode: .ok,
@@ -25,4 +27,3 @@ struct JSONRPCHTTPHandler: HTTPHandler {
         )
     }
 }
-

@@ -131,6 +131,7 @@ All methods follow the [JSON-RPC 2.0](https://www.jsonrpc.org/specification) spe
 | Method | Description |
 |--------|-------------|
 | `device.info` | Get screen size and scale factor |
+| `device.clipboard` | Read text from the system clipboard (64 KiB maximum) |
 | `device.io.orientation.get` | Get current orientation (`PORTRAIT` / `LANDSCAPE`) |
 | `device.io.orientation.set` | Set orientation to `PORTRAIT` or `LANDSCAPE` |
 | `device.url` | Open a URL |
