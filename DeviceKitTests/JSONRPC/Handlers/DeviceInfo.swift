@@ -34,6 +34,7 @@ struct DeviceInfoMethodHandler: RPCMethodHandler {
             // an atomic double tap into a dangerous single tap.
             "capabilities": .array([
                 .string("io.tap.count.2"),
+                .string("device.clipboard.read"),
                 // S08 experimental build marker: identifies a canary runner with
                 // duplicate-frame suppression so device.info can confirm what a
                 // phone actually carries (the prepare script warns experimental

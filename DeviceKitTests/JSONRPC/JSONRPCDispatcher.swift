@@ -28,6 +28,7 @@ final class JSONRPCDispatcher {
         registerHandler(DeviceInfoMethodHandler())
         registerHandler(AppsForegroundMethodHandler())
         registerHandler(FileSaveMethodHandler())
+        registerHandler(ClipboardMethodHandler())
     }
 
     func registerHandler<T: RPCMethodHandler>(_ handler: T) {

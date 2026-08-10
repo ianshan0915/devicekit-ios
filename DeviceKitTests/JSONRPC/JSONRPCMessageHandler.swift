@@ -16,9 +16,11 @@ struct JSONRPCMessageHandler: WSMessageHandler {
                 for await message in client {
                     switch message {
                     case .text(let text):
-                        NSLog("Received text message: \(text.prefix(200))...")
+                        // Clipboard and other RPC values are private user data;
+                        // keep bodies out of the runner's persistent logs.
+                        NSLog("Received text message (\(text.utf8.count) bytes)")
                         let response = await dispatcher.dispatch(text)
-                        NSLog("Sending response: \(response.prefix(200))...")
+                        NSLog("Sending text response (\(response.utf8.count) bytes)")
                         continuation.yield(WSMessage.text(response))
 
                     case .data(let data):
@@ -42,4 +44,3 @@ struct JSONRPCMessageHandler: WSMessageHandler {
         }
     }
 }
-
