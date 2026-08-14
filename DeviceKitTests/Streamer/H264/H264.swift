@@ -16,6 +16,10 @@ private enum H264Constants {
     static let defaultScale: Int = 50
     static let minScale: Int = 10
     static let maxScale: Int = 100
+    static let defaultStaticFPS: Int = 5
+    static let defaultAdaptiveAfterMS: Int = 2_000
+    static let minAdaptiveAfterMS: Int = 500
+    static let maxAdaptiveAfterMS: Int = 60_000
 }
 
 struct H264HTTPStreamConfig: Sendable {
@@ -24,15 +28,32 @@ struct H264HTTPStreamConfig: Sendable {
     let quality: Float
     let scale: Float
     let suppressDuplicates: Bool
+    let adaptiveCapture: Bool
+    let staticFPS: Int
+    let adaptiveAfterMS: Int
     let frameInterval: UInt64
+    let staticFrameInterval: UInt64
 
-    init(fps: Int, bitrate: Int, quality: Float, scale: Float, suppressDuplicates: Bool = true) {
+    init(
+        fps: Int,
+        bitrate: Int,
+        quality: Float,
+        scale: Float,
+        suppressDuplicates: Bool = true,
+        adaptiveCapture: Bool = true,
+        staticFPS: Int = 5,
+        adaptiveAfterMS: Int = 2_000
+    ) {
         self.fps = fps
         self.bitrate = bitrate
         self.quality = quality
         self.scale = scale
         self.suppressDuplicates = suppressDuplicates
+        self.adaptiveCapture = adaptiveCapture && suppressDuplicates
+        self.staticFPS = max(1, min(fps, staticFPS))
+        self.adaptiveAfterMS = adaptiveAfterMS
         self.frameInterval = UInt64(1_000_000_000 / max(1, fps))
+        self.staticFrameInterval = UInt64(1_000_000_000 / self.staticFPS)
     }
 }
 
@@ -53,10 +74,33 @@ struct H264HTTPHandler: HTTPHandler {
         // S08 experiment knob: dup=0 disables duplicate-frame suppression so the
         // same canary build can reproduce the reviewed runner's behavior.
         let suppressDuplicates = request.queryInt(name: "dup", default: 1, min: 0, max: 1) != 0
+        // Unlike duplicate suppression, adaptive capture reduces the screenshot
+        // XPC work performed on the phone. A static screen backs off to 5 fps by
+        // default; input wakes the loop before the next static capture deadline.
+        let adaptiveCapture = request.queryInt(name: "adaptive", default: 1, min: 0, max: 1) != 0
+        let staticFPS = min(
+            fps,
+            request.queryInt(name: "staticfps", default: H264Constants.defaultStaticFPS, min: 1, max: H264Constants.maxFPS)
+        )
+        let adaptiveAfterMS = request.queryInt(
+            name: "adaptiveafterms",
+            default: H264Constants.defaultAdaptiveAfterMS,
+            min: H264Constants.minAdaptiveAfterMS,
+            max: H264Constants.maxAdaptiveAfterMS
+        )
 
-        logger.info("Starting H264 stream: scale=\(scalePercent)% @ \(fps)fps, \(bitrate/1_000_000)Mbps, dup=\(suppressDuplicates ? "on" : "off")")
+        logger.info("Starting H264 stream: scale=\(scalePercent)% @ \(fps)fps, \(bitrate/1_000_000)Mbps, dup=\(suppressDuplicates ? "on" : "off"), adaptive=\(adaptiveCapture && suppressDuplicates ? "on" : "off"), staticfps=\(staticFPS), adaptiveafterms=\(adaptiveAfterMS)")
 
-        let config = H264HTTPStreamConfig(fps: fps, bitrate: bitrate, quality: quality, scale: scale, suppressDuplicates: suppressDuplicates)
+        let config = H264HTTPStreamConfig(
+            fps: fps,
+            bitrate: bitrate,
+            quality: quality,
+            scale: scale,
+            suppressDuplicates: suppressDuplicates,
+            adaptiveCapture: adaptiveCapture,
+            staticFPS: staticFPS,
+            adaptiveAfterMS: adaptiveAfterMS
+        )
         let stream = H264ByteStream(config: config)
         let bodySequence = HTTPBodySequence(from: stream)
 
@@ -65,6 +109,9 @@ struct H264HTTPHandler: HTTPHandler {
         headers[HTTPHeader("Server")] = "DeviceKit-iOS"
         headers[HTTPHeader("Connection")] = "close"
         headers[HTTPHeader("Cache-Control")] = "no-cache, no-store, must-revalidate"
+        headers[HTTPHeader("X-DeviceKit-Adaptive-Capture")] = config.adaptiveCapture ? "on" : "off"
+        headers[HTTPHeader("X-DeviceKit-Static-FPS")] = String(config.staticFPS)
+        headers[HTTPHeader("X-DeviceKit-Adaptive-After-MS")] = String(config.adaptiveAfterMS)
 
         return HTTPResponse(statusCode: .ok, headers: headers, body: bodySequence)
     }
@@ -99,7 +146,12 @@ final class H264ByteIterator: AsyncBufferedIteratorProtocol, @unchecked Sendable
 
     init(config: H264HTTPStreamConfig) {
         self.config = config
-        self.frameProducer = H264FrameProducer(suppressDuplicates: config.suppressDuplicates)
+        self.frameProducer = H264FrameProducer(
+            suppressDuplicates: config.suppressDuplicates,
+            adaptiveCapture: config.adaptiveCapture,
+            staticFrameInterval: config.staticFrameInterval,
+            adaptiveAfterMS: config.adaptiveAfterMS
+        )
 
         let stream = frameProducer.makeNALUnitStream()
         self.naluStream = stream

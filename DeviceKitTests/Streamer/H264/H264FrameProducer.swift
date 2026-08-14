@@ -1,5 +1,6 @@
 import CoreImage
 import CoreMedia
+import Foundation
 import H264Codec
 import Metal
 import os
@@ -14,6 +15,44 @@ enum H264Error: Error, LocalizedError {
         case .captureFailed: return "Screenshot capture failed"
         case .conversionFailed: return "Pixel buffer conversion failed"
         case .encoderNotConfigured: return "Encoder not configured"
+        }
+    }
+}
+
+/// Process-wide visual activity signal shared by JSON-RPC input and H.264.
+///
+/// The capture loop polls this generation only while waiting between frames.
+/// That avoids a second screenshot loop or cross-actor continuation lifecycle,
+/// and wakes a static 5 fps stream within 20 ms of operator input.
+final class H264CaptureActivity: @unchecked Sendable {
+    static let shared = H264CaptureActivity()
+
+    private let lock = NSLock()
+    private var value: UInt64 = 0
+
+    private init() {}
+
+    func mark() {
+        lock.lock()
+        value &+= 1
+        lock.unlock()
+    }
+
+    func generation() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    static func isVisualMutation(_ method: String) -> Bool {
+        if method.hasPrefix("device.io.") {
+            return method != "device.io.orientation.get"
+        }
+        switch method {
+        case "device.apps.launch", "device.apps.terminate", "device.url", "device.saveFile":
+            return true
+        default:
+            return false
         }
     }
 }
@@ -48,13 +87,20 @@ final class H264FrameProducer: @unchecked Sendable {
     // S08 duplicate-frame suppression. A static screen still emits one forced
     // IDR per second (the reviewed runner's keyframe cadence) so late-joining
     // viewers and the bridge's awaiting-idr handoff keep the same recovery
-    // semantics. Capture runs at the full configured rate and a changed frame
-    // is encoded immediately, so suppression never delays motion or control.
+    // semantics. Adaptive capture separately backs off the screenshot cadence
+    // after a static period and wakes promptly on JSON-RPC input.
     private let suppressDuplicates: Bool
+    private let adaptiveCapture: Bool
+    private let staticFrameInterval: UInt64
+    private let adaptiveAfterNs: UInt64
     private var referenceData: Data?          // stride-aware copy of last emitted frame
     private var lastEmittedAtNs: UInt64 = 0   // monotonic clock of last encode
     private var lastIDRAtNs: UInt64 = 0       // monotonic clock of last keyframe
-    private var captureTick: UInt64 = 0       // capture counter used for timestamps
+    private var streamStartedAtNs: UInt64 = 0
+    private var lastTimestampValue: CMTimeValue = -1
+    private var lastContentChangeAtNs: UInt64 = 0
+    private var lastActivityGeneration: UInt64
+    private var isStaticCadence = false
 
     private static let forcedFrameIntervalNs: UInt64 = 1_000_000_000  // 1 s floor
     // Defensive epsilon only: captures are byte-deterministic on static screens
@@ -71,6 +117,10 @@ final class H264FrameProducer: @unchecked Sendable {
     private var emittedFrames: UInt64 = 0
     private var suppressedFrames: UInt64 = 0
     private var forcedKeyframes: UInt64 = 0
+    private var fullCadenceCaptures: UInt64 = 0
+    private var staticCadenceCaptures: UInt64 = 0
+    private var activityWakeups: UInt64 = 0
+    private var cadenceTransitions: UInt64 = 0
     private var lastCountersLogAtNs: UInt64 = 0
     private static let countersLogIntervalNs: UInt64 = 10_000_000_000
 
@@ -81,10 +131,23 @@ final class H264FrameProducer: @unchecked Sendable {
 
     init() {
         self.suppressDuplicates = true
+        self.adaptiveCapture = true
+        self.staticFrameInterval = 200_000_000
+        self.adaptiveAfterNs = 2_000_000_000
+        self.lastActivityGeneration = H264CaptureActivity.shared.generation()
     }
 
-    init(suppressDuplicates: Bool) {
+    init(
+        suppressDuplicates: Bool,
+        adaptiveCapture: Bool = true,
+        staticFrameInterval: UInt64 = 200_000_000,
+        adaptiveAfterMS: Int = 2_000
+    ) {
         self.suppressDuplicates = suppressDuplicates
+        self.adaptiveCapture = adaptiveCapture && suppressDuplicates
+        self.staticFrameInterval = staticFrameInterval
+        self.adaptiveAfterNs = UInt64(max(0, adaptiveAfterMS)) * 1_000_000
+        self.lastActivityGeneration = H264CaptureActivity.shared.generation()
     }
 
     func makeNALUnitStream() -> AsyncStream<Data> {
@@ -120,6 +183,17 @@ final class H264FrameProducer: @unchecked Sendable {
         frameInterval: UInt64
     ) async throws {
         let frameStart = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
+        if streamStartedAtNs == 0 {
+            streamStartedAtNs = frameStart
+            lastContentChangeAtNs = frameStart
+        }
+
+        let activityGeneration = H264CaptureActivity.shared.generation()
+        if activityGeneration != lastActivityGeneration {
+            lastActivityGeneration = activityGeneration
+            lastContentChangeAtNs = frameStart
+            setStaticCadence(false, reason: "operator_input")
+        }
 
         guard let uiImage = try? FBScreenshot.captureUIImage(
             withQuality: 0.9,
@@ -151,16 +225,25 @@ final class H264FrameProducer: @unchecked Sendable {
             throw H264Error.conversionFailed
         }
 
-        // Timestamps count capture slots, not encoded frames, so a suppressed
-        // static run still presents frames at wall-clock time (1 s of silence =
-        // fps ticks at this timescale), which keeps RTP/decoder timing honest.
+        // Adaptive cadence skips capture slots as well as encoded frames. Derive
+        // timestamps from elapsed wall time so a 5 fps static period still
+        // advances correctly on the configured stream timescale.
+        let elapsedNs = frameStart - streamStartedAtNs
+        let wallTimestamp = CMTimeValue((elapsedNs * UInt64(fps)) / 1_000_000_000)
+        let timestampValue = max(lastTimestampValue + 1, wallTimestamp)
+        lastTimestampValue = timestampValue
         let timestamp = CMTime(
-            value: CMTimeValue(captureTick),
+            value: timestampValue,
             timescale: CMTimeScale(fps)
         )
-        captureTick += 1
 
-        if suppressDuplicates && !frameChanged(pixelBuffer) {
+        let changed = !suppressDuplicates || frameChanged(pixelBuffer)
+        if changed {
+            lastContentChangeAtNs = frameStart
+            setStaticCadence(false, reason: "content_changed")
+        }
+
+        if suppressDuplicates && !changed {
             // Screen unchanged since the last emitted frame.
             if frameStart - lastEmittedAtNs >= Self.forcedFrameIntervalNs {
                 // Static for >= 1 s: emit one forced IDR to keep the pipeline
@@ -186,12 +269,54 @@ final class H264FrameProducer: @unchecked Sendable {
             emittedFrames += 1
         }
 
+        if adaptiveCapture && !changed && frameStart - lastContentChangeAtNs >= adaptiveAfterNs {
+            setStaticCadence(true, reason: "static_screen")
+        }
+
+        if isStaticCadence {
+            staticCadenceCaptures += 1
+        } else {
+            fullCadenceCaptures += 1
+        }
+
         logCountersIfDue(frameStart)
 
-        let elapsed = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) - frameStart
-        if elapsed < frameInterval {
-            try await Task.sleep(nanoseconds: frameInterval - elapsed)
+        let targetInterval = isStaticCadence ? staticFrameInterval : frameInterval
+        if try await pace(
+            frameStartedAt: frameStart,
+            interval: targetInterval,
+            activityGeneration: activityGeneration
+        ) {
+            activityWakeups += 1
         }
+    }
+
+    /// Wait until the next capture deadline, but poll the cheap activity
+    /// generation so control wakes a static stream without waiting up to 200 ms.
+    private func pace(
+        frameStartedAt: UInt64,
+        interval: UInt64,
+        activityGeneration: UInt64
+    ) async throws -> Bool {
+        let deadline = frameStartedAt + interval
+        while true {
+            let now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
+            if now >= deadline { return false }
+            if adaptiveCapture && H264CaptureActivity.shared.generation() != activityGeneration {
+                return true
+            }
+            let remaining = deadline - now
+            try await Task.sleep(nanoseconds: min(remaining, 20_000_000))
+        }
+    }
+
+    private func setStaticCadence(_ enabled: Bool, reason: String) {
+        guard isStaticCadence != enabled else { return }
+        isStaticCadence = enabled
+        cadenceTransitions += 1
+        logger.info(
+            "Adaptive capture: state=\(enabled ? "static" : "full") reason=\(reason) transitions=\(self.cadenceTransitions)"
+        )
     }
 
     /// True when the scaled encoder input differs from the last emitted frame.
@@ -260,7 +385,7 @@ final class H264FrameProducer: @unchecked Sendable {
         guard now - lastCountersLogAtNs >= Self.countersLogIntervalNs else { return }
         lastCountersLogAtNs = now
         logger.info(
-            "S08 suppression: emitted=\(self.emittedFrames) skipped=\(self.suppressedFrames) forcedIDR=\(self.forcedKeyframes) mode=\(self.suppressDuplicates ? "on" : "off")"
+            "Capture counters: emitted=\(self.emittedFrames) skipped=\(self.suppressedFrames) forcedIDR=\(self.forcedKeyframes) full=\(self.fullCadenceCaptures) static=\(self.staticCadenceCaptures) activityWakeups=\(self.activityWakeups) state=\(self.isStaticCadence ? "static" : "full") dup=\(self.suppressDuplicates ? "on" : "off") adaptive=\(self.adaptiveCapture ? "on" : "off")"
         )
     }
 

@@ -69,6 +69,9 @@ final class JSONRPCDispatcher {
         }
 
         do {
+            if H264CaptureActivity.isVisualMutation(request.method) {
+                H264CaptureActivity.shared.mark()
+            }
             logger.info("Executing method: \(request.method)")
             let result = try await handler.execute(params: request.params)
             logger.info("Method \(request.method) completed successfully")
