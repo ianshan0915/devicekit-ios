@@ -65,7 +65,8 @@ struct H264HTTPStreamConfig: Sendable {
     let quality: Float
     let scale: Float
     let suppressDuplicates: Bool
-    let actionCapture: Bool
+    /// 0 = ordinary stream, 1 = rejected B04 behavior, 2 = guarded successor.
+    let actionCaptureMode: Int
     let frameInterval: UInt64
 
     init(
@@ -74,14 +75,14 @@ struct H264HTTPStreamConfig: Sendable {
         quality: Float,
         scale: Float,
         suppressDuplicates: Bool = true,
-        actionCapture: Bool = false
+        actionCaptureMode: Int = 0
     ) {
         self.fps = fps
         self.bitrate = bitrate
         self.quality = quality
         self.scale = scale
         self.suppressDuplicates = suppressDuplicates
-        self.actionCapture = actionCapture
+        self.actionCaptureMode = actionCaptureMode
         self.frameInterval = UInt64(1_000_000_000 / max(1, fps))
     }
 }
@@ -103,12 +104,13 @@ struct H264HTTPHandler: HTTPHandler {
         // S08 experiment knob: dup=0 disables duplicate-frame suppression so the
         // same canary build can reproduce the reviewed runner's behavior.
         let suppressDuplicates = request.queryInt(name: "dup", default: 1, min: 0, max: 1) != 0
-        // B04 is intentionally default-off. action_capture=1 enables its
-        // bounded, change-aware p95 window; omitting it preserves the reviewed
-        // path byte-for-byte.
-        let actionCapture = request.queryInt(name: "action_capture", default: 0, min: 0, max: 1) != 0
+        // Both experiments are intentionally default-off. Mode 1 retains the
+        // rejected B04 path for exact A/B reproduction. Mode 2 adds bounded
+        // work, adaptive backpressure, and a cooldown circuit breaker. Omitting
+        // the query preserves the reviewed production path byte-for-byte.
+        let actionCaptureMode = request.queryInt(name: "action_capture", default: 0, min: 0, max: 2)
 
-        logger.info("Starting H264 stream: scale=\(scalePercent)% @ \(fps)fps, \(bitrate/1_000_000)Mbps, dup=\(suppressDuplicates ? "on" : "off"), actionCaptureV2=\(actionCapture ? "on" : "off")")
+        logger.info("Starting H264 stream: scale=\(scalePercent)% @ \(fps)fps, \(bitrate/1_000_000)Mbps, dup=\(suppressDuplicates ? "on" : "off"), actionCaptureMode=\(actionCaptureMode)")
 
         let config = H264HTTPStreamConfig(
             fps: fps,
@@ -116,7 +118,7 @@ struct H264HTTPHandler: HTTPHandler {
             quality: quality,
             scale: scale,
             suppressDuplicates: suppressDuplicates,
-            actionCapture: actionCapture
+            actionCaptureMode: actionCaptureMode
         )
         let stream = H264ByteStream(config: config)
         let bodySequence = HTTPBodySequence(from: stream)
@@ -162,7 +164,7 @@ final class H264ByteIterator: AsyncBufferedIteratorProtocol, @unchecked Sendable
         self.config = config
         self.frameProducer = H264FrameProducer(
             suppressDuplicates: config.suppressDuplicates,
-            actionCapture: config.actionCapture
+            actionCaptureMode: config.actionCaptureMode
         )
 
         let stream = frameProducer.makeNALUnitStream()

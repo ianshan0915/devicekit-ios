@@ -40,9 +40,11 @@ struct DeviceInfoMethodHandler: RPCMethodHandler {
                 // phone actually carries (the prepare script warns experimental
                 // runners must advertise their own capability).
                 .string("io.devicefarm.dupframe.suppress"),
-                // B04 experimental build marker. The feature itself remains
-                // default-off until /h264 is opened with action_capture=1.
-                .string("io.devicefarm.action-capture-v2")
+                // B04 remains available only for exact rejected-candidate A/B.
+                .string("io.devicefarm.action-capture-v2"),
+                // B05 guarded successor; still default-off and selected only
+                // by /h264?action_capture=2.
+                .string("io.devicefarm.action-capture-v3")
             ]),
             // R2: the exact runner commit this build was compiled from, injected
             // into the built bundle's Info.plist by prepare-ios-devicekit.sh.
