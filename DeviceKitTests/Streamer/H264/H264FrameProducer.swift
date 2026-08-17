@@ -51,12 +51,20 @@ final class H264FrameProducer: @unchecked Sendable {
     // semantics. Capture runs at the full configured rate and a changed frame
     // is encoded immediately, so suppression never delays motion or control.
     private let suppressDuplicates: Bool
+    private let actionCaptureEnabled: Bool
     private var referenceData: Data?          // stride-aware copy of last emitted frame
     private var lastEmittedAtNs: UInt64 = 0   // monotonic clock of last encode
     private var lastIDRAtNs: UInt64 = 0       // monotonic clock of last keyframe
     private var captureTick: UInt64 = 0       // capture counter used for timestamps
 
     private static let forcedFrameIntervalNs: UInt64 = 1_000_000_000  // 1 s floor
+    // B01: after a completed action, retry unchanged captures for at most 250
+    // ms. Ten milliseconds is a fairness floor, not a requested FPS: screenshot
+    // capture itself normally takes longer, and the window is strictly bounded.
+    private static let actionCaptureWindowNs: UInt64 = 250_000_000
+    private static let aggressiveCaptureIntervalNs: UInt64 = 10_000_000
+    private var lastActionHintGeneration: UInt64 = 0
+    private var actionCaptureUntilNs: UInt64 = 0
     // Defensive epsilon only: captures are byte-deterministic on static screens
     // (JPEG + GPU scale of identical input), so any *visible* change must stream
     // immediately. 0.001% of the scaled buffer is ~7-8 pixels — small enough
@@ -71,6 +79,10 @@ final class H264FrameProducer: @unchecked Sendable {
     private var emittedFrames: UInt64 = 0
     private var suppressedFrames: UInt64 = 0
     private var forcedKeyframes: UInt64 = 0
+    private var actionHints: UInt64 = 0
+    private var aggressiveCaptures: UInt64 = 0
+    private var actionChanges: UInt64 = 0
+    private var actionTimeouts: UInt64 = 0
     private var lastCountersLogAtNs: UInt64 = 0
     private static let countersLogIntervalNs: UInt64 = 10_000_000_000
 
@@ -81,10 +93,17 @@ final class H264FrameProducer: @unchecked Sendable {
 
     init() {
         self.suppressDuplicates = true
+        self.actionCaptureEnabled = false
     }
 
     init(suppressDuplicates: Bool) {
         self.suppressDuplicates = suppressDuplicates
+        self.actionCaptureEnabled = false
+    }
+
+    init(suppressDuplicates: Bool, actionCapture: Bool) {
+        self.suppressDuplicates = suppressDuplicates
+        self.actionCaptureEnabled = actionCapture
     }
 
     func makeNALUnitStream() -> AsyncStream<Data> {
@@ -120,6 +139,7 @@ final class H264FrameProducer: @unchecked Sendable {
         frameInterval: UInt64
     ) async throws {
         let frameStart = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
+        beginActionCaptureWindowIfNeeded(frameStart)
 
         guard let uiImage = try? FBScreenshot.captureUIImage(
             withQuality: 0.9,
@@ -160,7 +180,11 @@ final class H264FrameProducer: @unchecked Sendable {
         )
         captureTick += 1
 
-        if suppressDuplicates && !frameChanged(pixelBuffer) {
+        // Compute actual pixel change even when duplicate suppression is off so
+        // the B01 A/B knob can end an action window on the same visual event.
+        let contentChanged = frameChanged(pixelBuffer)
+
+        if suppressDuplicates && !contentChanged {
             // Screen unchanged since the last emitted frame.
             if frameStart - lastEmittedAtNs >= Self.forcedFrameIntervalNs {
                 // Static for >= 1 s: emit one forced IDR to keep the pipeline
@@ -186,12 +210,63 @@ final class H264FrameProducer: @unchecked Sendable {
             emittedFrames += 1
         }
 
+        let frameFinished = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
+        let aggressiveCapture = shouldContinueActionCapture(
+            now: frameFinished,
+            contentChanged: contentChanged
+        )
         logCountersIfDue(frameStart)
 
-        let elapsed = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) - frameStart
-        if elapsed < frameInterval {
-            try await Task.sleep(nanoseconds: frameInterval - elapsed)
+        let elapsed = frameFinished - frameStart
+        let targetInterval = aggressiveCapture
+            ? Self.aggressiveCaptureIntervalNs
+            : frameInterval
+        if elapsed < targetInterval {
+            try await Task.sleep(nanoseconds: targetInterval - elapsed)
+        } else if aggressiveCapture {
+            // Screenshot capture may already exceed the fairness floor. Yield
+            // once so an action/RPC task cannot be starved by the bounded burst.
+            await Task.yield()
         }
+    }
+
+    @MainActor
+    private func beginActionCaptureWindowIfNeeded(_ now: UInt64) {
+        guard actionCaptureEnabled else { return }
+        let hint = ActionCaptureHints.snapshot()
+        guard hint.generation != lastActionHintGeneration else { return }
+
+        lastActionHintGeneration = hint.generation
+        actionHints += 1
+        let (deadline, overflow) = hint.requestedAtNs.addingReportingOverflow(
+            Self.actionCaptureWindowNs
+        )
+        actionCaptureUntilNs = overflow ? UInt64.max : deadline
+
+        // A stream created after an old action must not replay stale work.
+        if now >= actionCaptureUntilNs {
+            actionCaptureUntilNs = 0
+            actionTimeouts += 1
+        }
+    }
+
+    private func shouldContinueActionCapture(
+        now: UInt64,
+        contentChanged: Bool
+    ) -> Bool {
+        guard actionCaptureEnabled, actionCaptureUntilNs != 0 else { return false }
+        if contentChanged {
+            actionCaptureUntilNs = 0
+            actionChanges += 1
+            return false
+        }
+        if now >= actionCaptureUntilNs {
+            actionCaptureUntilNs = 0
+            actionTimeouts += 1
+            return false
+        }
+        aggressiveCaptures += 1
+        return true
     }
 
     /// True when the scaled encoder input differs from the last emitted frame.
@@ -260,7 +335,7 @@ final class H264FrameProducer: @unchecked Sendable {
         guard now - lastCountersLogAtNs >= Self.countersLogIntervalNs else { return }
         lastCountersLogAtNs = now
         logger.info(
-            "S08 suppression: emitted=\(self.emittedFrames) skipped=\(self.suppressedFrames) forcedIDR=\(self.forcedKeyframes) mode=\(self.suppressDuplicates ? "on" : "off")"
+            "H264 counters: emitted=\(self.emittedFrames) skipped=\(self.suppressedFrames) forcedIDR=\(self.forcedKeyframes) dup=\(self.suppressDuplicates ? "on" : "off") actionCapture=\(self.actionCaptureEnabled ? "on" : "off") hints=\(self.actionHints) aggressive=\(self.aggressiveCaptures) changed=\(self.actionChanges) timedOut=\(self.actionTimeouts)"
         )
     }
 

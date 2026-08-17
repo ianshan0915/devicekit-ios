@@ -6,6 +6,47 @@ import CoreImage
 import CoreMedia
 import H264Codec
 
+struct ActionCaptureHintSnapshot: Sendable {
+    let generation: UInt64
+    let requestedAtNs: UInt64
+}
+
+/// Process-wide, bounded hint from a completed UI action to opt-in H.264
+/// streams. The dispatcher and frame capture both run on MainActor, so this is
+/// deliberately a coalescing generation counter rather than a queue: a burst
+/// of controls can extend one capture window but can never accumulate work.
+@MainActor
+enum ActionCaptureHints {
+    private static var generation: UInt64 = 0
+    private static var requestedAtNs: UInt64 = 0
+
+    private static let visibleActionMethods: Set<String> = [
+        "device.io.tap",
+        "device.io.gesture",
+        "device.io.button",
+        "device.io.text",
+        "device.io.swipe",
+        "device.io.longpress",
+        "device.io.orientation.set",
+        "device.apps.launch",
+        "device.apps.terminate",
+        "device.url",
+    ]
+
+    static func request(after method: String) {
+        guard visibleActionMethods.contains(method) else { return }
+        generation &+= 1
+        requestedAtNs = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
+    }
+
+    static func snapshot() -> ActionCaptureHintSnapshot {
+        ActionCaptureHintSnapshot(
+            generation: generation,
+            requestedAtNs: requestedAtNs
+        )
+    }
+}
+
 private enum H264Constants {
     static let defaultFPS: Int = 30
     static let maxFPS: Int = 60
@@ -24,14 +65,23 @@ struct H264HTTPStreamConfig: Sendable {
     let quality: Float
     let scale: Float
     let suppressDuplicates: Bool
+    let actionCapture: Bool
     let frameInterval: UInt64
 
-    init(fps: Int, bitrate: Int, quality: Float, scale: Float, suppressDuplicates: Bool = true) {
+    init(
+        fps: Int,
+        bitrate: Int,
+        quality: Float,
+        scale: Float,
+        suppressDuplicates: Bool = true,
+        actionCapture: Bool = false
+    ) {
         self.fps = fps
         self.bitrate = bitrate
         self.quality = quality
         self.scale = scale
         self.suppressDuplicates = suppressDuplicates
+        self.actionCapture = actionCapture
         self.frameInterval = UInt64(1_000_000_000 / max(1, fps))
     }
 }
@@ -53,10 +103,20 @@ struct H264HTTPHandler: HTTPHandler {
         // S08 experiment knob: dup=0 disables duplicate-frame suppression so the
         // same canary build can reproduce the reviewed runner's behavior.
         let suppressDuplicates = request.queryInt(name: "dup", default: 1, min: 0, max: 1) != 0
+        // B01 is intentionally default-off. action_capture=1 enables a bounded
+        // post-action capture window; omitting it preserves the reviewed path.
+        let actionCapture = request.queryInt(name: "action_capture", default: 0, min: 0, max: 1) != 0
 
-        logger.info("Starting H264 stream: scale=\(scalePercent)% @ \(fps)fps, \(bitrate/1_000_000)Mbps, dup=\(suppressDuplicates ? "on" : "off")")
+        logger.info("Starting H264 stream: scale=\(scalePercent)% @ \(fps)fps, \(bitrate/1_000_000)Mbps, dup=\(suppressDuplicates ? "on" : "off"), actionCapture=\(actionCapture ? "on" : "off")")
 
-        let config = H264HTTPStreamConfig(fps: fps, bitrate: bitrate, quality: quality, scale: scale, suppressDuplicates: suppressDuplicates)
+        let config = H264HTTPStreamConfig(
+            fps: fps,
+            bitrate: bitrate,
+            quality: quality,
+            scale: scale,
+            suppressDuplicates: suppressDuplicates,
+            actionCapture: actionCapture
+        )
         let stream = H264ByteStream(config: config)
         let bodySequence = HTTPBodySequence(from: stream)
 
@@ -99,7 +159,10 @@ final class H264ByteIterator: AsyncBufferedIteratorProtocol, @unchecked Sendable
 
     init(config: H264HTTPStreamConfig) {
         self.config = config
-        self.frameProducer = H264FrameProducer(suppressDuplicates: config.suppressDuplicates)
+        self.frameProducer = H264FrameProducer(
+            suppressDuplicates: config.suppressDuplicates,
+            actionCapture: config.actionCapture
+        )
 
         let stream = frameProducer.makeNALUnitStream()
         self.naluStream = stream

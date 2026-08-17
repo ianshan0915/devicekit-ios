@@ -71,6 +71,11 @@ final class JSONRPCDispatcher {
         do {
             logger.info("Executing method: \(request.method)")
             let result = try await handler.execute(params: request.params)
+            // B01: only opt-in H.264 streams consume this process-wide,
+            // coalesced hint. It is emitted after successful completion so a
+            // long-running action cannot spend the bounded capture window
+            // before the resulting UI transition is ready to observe.
+            ActionCaptureHints.request(after: request.method)
             logger.info("Method \(request.method) completed successfully")
             return JSONRPCResponse.success(result: result, id: request.id)
         } catch let error as RPCMethodError {
