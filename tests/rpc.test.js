@@ -48,7 +48,7 @@ describe("device.info", function () {
     assert.ok(result.scale > 0);
     assert.ok(Array.isArray(result.capabilities));
     assert.ok(result.capabilities.includes("io.tap.count.2"));
-    assert.ok(result.capabilities.includes("io.devicefarm.action-capture"));
+    assert.ok(result.capabilities.includes("io.devicefarm.action-capture-v2"));
   });
 
   it("ignores extra params", async function () {

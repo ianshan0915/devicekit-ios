@@ -103,11 +103,12 @@ struct H264HTTPHandler: HTTPHandler {
         // S08 experiment knob: dup=0 disables duplicate-frame suppression so the
         // same canary build can reproduce the reviewed runner's behavior.
         let suppressDuplicates = request.queryInt(name: "dup", default: 1, min: 0, max: 1) != 0
-        // B01 is intentionally default-off. action_capture=1 enables a bounded
-        // post-action capture window; omitting it preserves the reviewed path.
+        // B04 is intentionally default-off. action_capture=1 enables its
+        // bounded, change-aware p95 window; omitting it preserves the reviewed
+        // path byte-for-byte.
         let actionCapture = request.queryInt(name: "action_capture", default: 0, min: 0, max: 1) != 0
 
-        logger.info("Starting H264 stream: scale=\(scalePercent)% @ \(fps)fps, \(bitrate/1_000_000)Mbps, dup=\(suppressDuplicates ? "on" : "off"), actionCapture=\(actionCapture ? "on" : "off")")
+        logger.info("Starting H264 stream: scale=\(scalePercent)% @ \(fps)fps, \(bitrate/1_000_000)Mbps, dup=\(suppressDuplicates ? "on" : "off"), actionCaptureV2=\(actionCapture ? "on" : "off")")
 
         let config = H264HTTPStreamConfig(
             fps: fps,

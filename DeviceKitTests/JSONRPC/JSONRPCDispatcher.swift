@@ -71,7 +71,7 @@ final class JSONRPCDispatcher {
         do {
             logger.info("Executing method: \(request.method)")
             let result = try await handler.execute(params: request.params)
-            // B01: only opt-in H.264 streams consume this process-wide,
+            // B04: only opt-in H.264 streams consume this process-wide,
             // coalesced hint. It is emitted after successful completion so a
             // long-running action cannot spend the bounded capture window
             // before the resulting UI transition is ready to observe.

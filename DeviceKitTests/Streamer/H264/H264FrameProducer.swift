@@ -58,13 +58,21 @@ final class H264FrameProducer: @unchecked Sendable {
     private var captureTick: UInt64 = 0       // capture counter used for timestamps
 
     private static let forcedFrameIntervalNs: UInt64 = 1_000_000_000  // 1 s floor
-    // B01: after a completed action, retry unchanged captures for at most 250
-    // ms. Ten milliseconds is a fairness floor, not a requested FPS: screenshot
-    // capture itself normally takes longer, and the window is strictly bounded.
-    private static let actionCaptureWindowNs: UInt64 = 250_000_000
+    // B04: B01's 250 ms window improved the median but ended before the slow
+    // post-action transitions that dominate p95. Keep the first 300 ms hot,
+    // then continue at a 60 fps ceiling through the measured tail. Both a hard
+    // deadline and an attempt cap bound a static-screen action; the first
+    // material pixel change still ends the window immediately.
+    private static let actionCaptureFastWindowNs: UInt64 = 300_000_000
+    private static let actionCaptureWindowNs: UInt64 = 1_750_000_000
     private static let aggressiveCaptureIntervalNs: UInt64 = 10_000_000
+    private static let tailCaptureIntervalNs: UInt64 = 16_666_667
+    private static let maxActionCaptureAttempts: UInt64 = 96
+    private let streamCreatedAtNs = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
     private var lastActionHintGeneration: UInt64 = 0
+    private var actionCaptureStartedAtNs: UInt64 = 0
     private var actionCaptureUntilNs: UInt64 = 0
+    private var actionCaptureAttempts: UInt64 = 0
     // Defensive epsilon only: captures are byte-deterministic on static screens
     // (JPEG + GPU scale of identical input), so any *visible* change must stream
     // immediately. 0.001% of the scaled buffer is ~7-8 pixels — small enough
@@ -81,8 +89,10 @@ final class H264FrameProducer: @unchecked Sendable {
     private var forcedKeyframes: UInt64 = 0
     private var actionHints: UInt64 = 0
     private var aggressiveCaptures: UInt64 = 0
+    private var tailCaptures: UInt64 = 0
     private var actionChanges: UInt64 = 0
     private var actionTimeouts: UInt64 = 0
+    private var staleActionHints: UInt64 = 0
     private var lastCountersLogAtNs: UInt64 = 0
     private static let countersLogIntervalNs: UInt64 = 10_000_000_000
 
@@ -211,19 +221,17 @@ final class H264FrameProducer: @unchecked Sendable {
         }
 
         let frameFinished = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
-        let aggressiveCapture = shouldContinueActionCapture(
+        let actionCaptureInterval = nextActionCaptureInterval(
             now: frameFinished,
             contentChanged: contentChanged
         )
         logCountersIfDue(frameStart)
 
         let elapsed = frameFinished - frameStart
-        let targetInterval = aggressiveCapture
-            ? Self.aggressiveCaptureIntervalNs
-            : frameInterval
+        let targetInterval = actionCaptureInterval ?? frameInterval
         if elapsed < targetInterval {
             try await Task.sleep(nanoseconds: targetInterval - elapsed)
-        } else if aggressiveCapture {
+        } else if actionCaptureInterval != nil {
             // Screenshot capture may already exceed the fairness floor. Yield
             // once so an action/RPC task cannot be starved by the bounded burst.
             await Task.yield()
@@ -238,35 +246,55 @@ final class H264FrameProducer: @unchecked Sendable {
 
         lastActionHintGeneration = hint.generation
         actionHints += 1
+        // A newly-created stream must not replay an action completed before it
+        // existed. The longer p95 window makes this boundary load-bearing.
+        guard hint.requestedAtNs >= streamCreatedAtNs else {
+            staleActionHints += 1
+            return
+        }
+        actionCaptureStartedAtNs = hint.requestedAtNs
+        actionCaptureAttempts = 0
         let (deadline, overflow) = hint.requestedAtNs.addingReportingOverflow(
             Self.actionCaptureWindowNs
         )
         actionCaptureUntilNs = overflow ? UInt64.max : deadline
 
-        // A stream created after an old action must not replay stale work.
+        // The action may have expired while another main-actor task was busy.
         if now >= actionCaptureUntilNs {
-            actionCaptureUntilNs = 0
+            clearActionCaptureWindow()
             actionTimeouts += 1
         }
     }
 
-    private func shouldContinueActionCapture(
+    private func nextActionCaptureInterval(
         now: UInt64,
         contentChanged: Bool
-    ) -> Bool {
-        guard actionCaptureEnabled, actionCaptureUntilNs != 0 else { return false }
+    ) -> UInt64? {
+        guard actionCaptureEnabled, actionCaptureUntilNs != 0 else { return nil }
         if contentChanged {
-            actionCaptureUntilNs = 0
+            clearActionCaptureWindow()
             actionChanges += 1
-            return false
+            return nil
         }
-        if now >= actionCaptureUntilNs {
-            actionCaptureUntilNs = 0
+        if now >= actionCaptureUntilNs || actionCaptureAttempts >= Self.maxActionCaptureAttempts {
+            clearActionCaptureWindow()
             actionTimeouts += 1
-            return false
+            return nil
         }
-        aggressiveCaptures += 1
-        return true
+        actionCaptureAttempts += 1
+        let age = now >= actionCaptureStartedAtNs ? now - actionCaptureStartedAtNs : 0
+        if age < Self.actionCaptureFastWindowNs {
+            aggressiveCaptures += 1
+            return Self.aggressiveCaptureIntervalNs
+        }
+        tailCaptures += 1
+        return Self.tailCaptureIntervalNs
+    }
+
+    private func clearActionCaptureWindow() {
+        actionCaptureStartedAtNs = 0
+        actionCaptureUntilNs = 0
+        actionCaptureAttempts = 0
     }
 
     /// True when the scaled encoder input differs from the last emitted frame.
@@ -335,7 +363,7 @@ final class H264FrameProducer: @unchecked Sendable {
         guard now - lastCountersLogAtNs >= Self.countersLogIntervalNs else { return }
         lastCountersLogAtNs = now
         logger.info(
-            "H264 counters: emitted=\(self.emittedFrames) skipped=\(self.suppressedFrames) forcedIDR=\(self.forcedKeyframes) dup=\(self.suppressDuplicates ? "on" : "off") actionCapture=\(self.actionCaptureEnabled ? "on" : "off") hints=\(self.actionHints) aggressive=\(self.aggressiveCaptures) changed=\(self.actionChanges) timedOut=\(self.actionTimeouts)"
+            "H264 counters: emitted=\(self.emittedFrames) skipped=\(self.suppressedFrames) forcedIDR=\(self.forcedKeyframes) dup=\(self.suppressDuplicates ? "on" : "off") actionCaptureV2=\(self.actionCaptureEnabled ? "on" : "off") hints=\(self.actionHints) aggressive=\(self.aggressiveCaptures) tail=\(self.tailCaptures) changed=\(self.actionChanges) timedOut=\(self.actionTimeouts) stale=\(self.staleActionHints)"
         )
     }
 
