@@ -8,7 +8,11 @@ function sleep(ms) {
 }
 
 async function rpc(method, params = {}) {
-  const res = await fetch(`${BASE_URL}/rpc`, {
+  return rpcAtPath("/rpc", method, params);
+}
+
+async function rpcAtPath(path, method, params = {}) {
+  const res = await fetch(`${BASE_URL}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -48,11 +52,23 @@ describe("device.info", function () {
     assert.ok(result.scale > 0);
     assert.ok(Array.isArray(result.capabilities));
     assert.ok(result.capabilities.includes("io.tap.count.2"));
+    assert.ok(result.capabilities.includes("io.devicefarm.control-timing-v1"));
   });
 
   it("ignores extra params", async function () {
     const result = returnsResult(await rpc("device.info", { foo: "bar" }));
     assert.ok(result.screenSize);
+  });
+
+  it("returns scheduling attribution only when explicitly requested", async function () {
+    const ordinary = await rpc("device.info");
+    assert.strictEqual(ordinary.m06Timing, undefined);
+
+    const measured = await rpcAtPath("/rpc?m06_timing=1", "device.info");
+    assert.strictEqual(measured.m06Timing.schemaVersion, 1);
+    assert.ok(measured.m06Timing.mainActorWaitMs >= 0);
+    assert.ok(measured.m06Timing.handlerMs >= 0);
+    assert.strictEqual(typeof measured.m06Timing.screenshotActiveAtArrival, "boolean");
   });
 });
 

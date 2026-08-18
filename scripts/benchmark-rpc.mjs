@@ -101,7 +101,7 @@ function request(definition) {
     let path = definition.path;
     let method = definition.method;
     if (definition.rpc) {
-      path = "/rpc";
+      path = "/rpc?m06_timing=1";
       method = "POST";
       body = JSON.stringify({
         jsonrpc: "2.0",
@@ -148,7 +148,7 @@ function request(definition) {
           reject(new Error(`RPC ${payload.error.code}: ${payload.error.message}`));
           return;
         }
-        resolve({ elapsedMs, result: payload.result });
+        resolve({ elapsedMs, result: payload.result, m06Timing: payload.m06Timing });
       });
     });
     req.on("error", reject);
@@ -189,6 +189,7 @@ async function runAction(name, definition) {
   const handler = [];
   const rttOutsideHandler = [];
   const runnerTimingValues = new Map();
+  const m06TimingValues = new Map();
   const samples = [];
   const failures = [];
   for (let index = 0; index < options.samples; index += 1) {
@@ -197,6 +198,14 @@ async function runAction(name, definition) {
       elapsed.push(sample.elapsedMs);
       const durationSeconds = sample.result?.durationSeconds;
       const timings = sample.result?.timings;
+      if (sample.m06Timing && typeof sample.m06Timing === "object") {
+        for (const [key, value] of Object.entries(sample.m06Timing)) {
+          if (!Number.isFinite(value) || key === "schemaVersion") continue;
+          const values = m06TimingValues.get(key) ?? [];
+          values.push(value);
+          m06TimingValues.set(key, values);
+        }
+      }
       const synthesisSeconds = timings?.synthesisSeconds;
       if (Number.isFinite(synthesisSeconds)) synthesis.push(synthesisSeconds * 1000);
       else if (Number.isFinite(durationSeconds)) synthesis.push(durationSeconds * 1000);
@@ -217,6 +226,7 @@ async function runAction(name, definition) {
       samples.push({
         rttMs: sample.elapsedMs,
         result: sample.result,
+        m06Timing: sample.m06Timing,
       });
     } catch (error) {
       failures.push({ sample: index + 1, message: error.message });
@@ -236,6 +246,9 @@ async function runAction(name, definition) {
       : null,
     runnerTimings: Object.fromEntries(
       [...runnerTimingValues.entries()].map(([key, values]) => [key, summarize(values)])
+    ),
+    m06Scheduling: Object.fromEntries(
+      [...m06TimingValues.entries()].map(([key, values]) => [key, summarize(values)])
     ),
     failures,
     samples,

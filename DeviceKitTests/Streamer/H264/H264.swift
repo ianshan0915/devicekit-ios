@@ -24,14 +24,23 @@ struct H264HTTPStreamConfig: Sendable {
     let quality: Float
     let scale: Float
     let suppressDuplicates: Bool
+    let m06Timing: Bool
     let frameInterval: UInt64
 
-    init(fps: Int, bitrate: Int, quality: Float, scale: Float, suppressDuplicates: Bool = true) {
+    init(
+        fps: Int,
+        bitrate: Int,
+        quality: Float,
+        scale: Float,
+        suppressDuplicates: Bool = true,
+        m06Timing: Bool = false
+    ) {
         self.fps = fps
         self.bitrate = bitrate
         self.quality = quality
         self.scale = scale
         self.suppressDuplicates = suppressDuplicates
+        self.m06Timing = m06Timing
         self.frameInterval = UInt64(1_000_000_000 / max(1, fps))
     }
 }
@@ -53,10 +62,20 @@ struct H264HTTPHandler: HTTPHandler {
         // S08 experiment knob: dup=0 disables duplicate-frame suppression so the
         // same canary build can reproduce the reviewed runner's behavior.
         let suppressDuplicates = request.queryInt(name: "dup", default: 1, min: 0, max: 1) != 0
+        // M06 attribution is exact opt-in and records only durations/counters.
+        // Omitting it keeps the reviewed capture loop and RPC response unchanged.
+        let m06Timing = request.queryInt(name: "m06_timing", default: 0, min: 0, max: 1) == 1
 
-        logger.info("Starting H264 stream: scale=\(scalePercent)% @ \(fps)fps, \(bitrate/1_000_000)Mbps, dup=\(suppressDuplicates ? "on" : "off")")
+        logger.info("Starting H264 stream: scale=\(scalePercent)% @ \(fps)fps, \(bitrate/1_000_000)Mbps, dup=\(suppressDuplicates ? "on" : "off"), m06Timing=\(m06Timing ? "on" : "off")")
 
-        let config = H264HTTPStreamConfig(fps: fps, bitrate: bitrate, quality: quality, scale: scale, suppressDuplicates: suppressDuplicates)
+        let config = H264HTTPStreamConfig(
+            fps: fps,
+            bitrate: bitrate,
+            quality: quality,
+            scale: scale,
+            suppressDuplicates: suppressDuplicates,
+            m06Timing: m06Timing
+        )
         let stream = H264ByteStream(config: config)
         let bodySequence = HTTPBodySequence(from: stream)
 
@@ -99,7 +118,10 @@ final class H264ByteIterator: AsyncBufferedIteratorProtocol, @unchecked Sendable
 
     init(config: H264HTTPStreamConfig) {
         self.config = config
-        self.frameProducer = H264FrameProducer(suppressDuplicates: config.suppressDuplicates)
+        self.frameProducer = H264FrameProducer(
+            suppressDuplicates: config.suppressDuplicates,
+            m06Timing: config.m06Timing
+        )
 
         let stream = frameProducer.makeNALUnitStream()
         self.naluStream = stream
