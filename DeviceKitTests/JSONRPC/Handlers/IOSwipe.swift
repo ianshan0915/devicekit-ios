@@ -24,6 +24,7 @@ struct IOSwipeMethodHandler: RPCMethodHandler {
         let request = try decodeParams(IOSwipeRequest.self, from: params)
 
         do {
+            let start = Date()
             try await swipePrivateAPI(
                 start: StreamCoordinateSpace.point(
                     x: CGFloat(request.x1),
@@ -35,8 +36,12 @@ struct IOSwipeMethodHandler: RPCMethodHandler {
                 ),
                 duration: Constants.defaultSwipeDuration
             )
+            let duration = Date().timeIntervalSince(start)
 
-            return .object(["success": .bool(true)])
+            return .object([
+                "success": .bool(true),
+                "durationSeconds": .double(duration),
+            ])
         } catch {
             logger.error("Error performing swipe: \(error)")
             throw RPCMethodError.internalError("Error performing swipe: \(error.localizedDescription)")
@@ -44,7 +49,7 @@ struct IOSwipeMethodHandler: RPCMethodHandler {
     }
 
     func swipePrivateAPI(start: CGPoint, end: CGPoint, duration: Double) async throws {
-        logger.info("Swipe (v1) from \(start.debugDescription) to \(end.debugDescription) with duration \(duration)")
+        logger.info("Swipe (v2) from \(start.debugDescription) to \(end.debugDescription) with duration \(duration)")
 
         let eventRecord = EventRecord(orientation: .portrait)
         _ = eventRecord.addSwipeEvent(start: start, end: end, duration: duration)

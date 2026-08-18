@@ -39,9 +39,13 @@ final class EventRecord: NSObject {
 
     func addSwipeEvent(start: CGPoint, end: CGPoint, duration: TimeInterval) -> Self {
         var path = PointerEventPath.pathForTouch(at: start)
-        path.offset += Self.defaultTapDuration
-        path.moveTo(point: end)
+        // The endpoint timestamp defines the swipe's motion duration. The old
+        // shape moved for defaultTapDuration (100 ms), then added `duration`
+        // again before lift-up, leaving the finger stationary at the endpoint
+        // for another 100 ms. That doubled an ordinary 100 ms swipe and delayed
+        // XCTest completion without improving its trajectory.
         path.offset += duration
+        path.moveTo(point: end)
         path.liftUp()
         return add(path)
     }

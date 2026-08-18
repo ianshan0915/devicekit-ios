@@ -66,7 +66,10 @@ struct IOTapMethodHandler: RPCMethodHandler {
             try await RunnerDaemonProxy().synthesize(eventRecord: eventRecord)
             let duration = Date().timeIntervalSince(start)
             logger.info("Tapping took \(duration)")
-            return .object(["success": .bool(true)])
+            return .object([
+                "success": .bool(true),
+                "durationSeconds": .double(duration),
+            ])
         } catch {
             logger.error("Error tapping: \(error)")
             throw RPCMethodError.internalError(

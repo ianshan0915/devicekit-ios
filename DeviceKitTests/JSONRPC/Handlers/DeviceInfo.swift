@@ -40,7 +40,9 @@ struct DeviceInfoMethodHandler: RPCMethodHandler {
                 // phone actually carries (the prepare script warns experimental
                 // runners must advertise their own capability).
                 .string("io.devicefarm.dupframe.suppress"),
-                .string("io.devicefarm.control-timing-v1")
+                .string("io.devicefarm.control-timing-v1"),
+                .string("io.devicefarm.swipe-duration-v2"),
+                .string("io.devicefarm.input-duration-v1")
             ]),
             // R2: the exact runner commit this build was compiled from, injected
             // into the built bundle's Info.plist by prepare-ios-devicekit.sh.

@@ -53,6 +53,8 @@ describe("device.info", function () {
     assert.ok(Array.isArray(result.capabilities));
     assert.ok(result.capabilities.includes("io.tap.count.2"));
     assert.ok(result.capabilities.includes("io.devicefarm.control-timing-v1"));
+    assert.ok(result.capabilities.includes("io.devicefarm.swipe-duration-v2"));
+    assert.ok(result.capabilities.includes("io.devicefarm.input-duration-v1"));
   });
 
   it("ignores extra params", async function () {
@@ -131,6 +133,7 @@ describe("device.io.tap", function () {
   it("taps at coordinates", async function () {
     const result = returnsResult(await rpc("device.io.tap", { x: 10, y: 10 }));
     assert.ok(result);
+    assert.ok(result.durationSeconds >= 0);
   });
 
   it("double-taps atomically at coordinates", async function () {
@@ -162,6 +165,7 @@ describe("device.io.swipe", function () {
       x1: 200, y1: 400, x2: 200, y2: 200,
     }));
     assert.ok(result);
+    assert.ok(result.durationSeconds >= 0);
   });
 
   it("fails without coordinates", async function () {
