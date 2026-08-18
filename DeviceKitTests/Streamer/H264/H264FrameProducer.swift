@@ -52,6 +52,7 @@ final class H264FrameProducer: @unchecked Sendable {
     // is encoded immediately, so suppression never delays motion or control.
     private let suppressDuplicates: Bool
     private let m06Timing: Bool
+    private let emitAccessUnitDelimiter: Bool
     private var referenceData: Data?          // stride-aware copy of last emitted frame
     private var lastEmittedAtNs: UInt64 = 0   // monotonic clock of last encode
     private var lastIDRAtNs: UInt64 = 0       // monotonic clock of last keyframe
@@ -83,16 +84,23 @@ final class H264FrameProducer: @unchecked Sendable {
     init() {
         self.suppressDuplicates = true
         self.m06Timing = false
+        self.emitAccessUnitDelimiter = false
     }
 
     init(suppressDuplicates: Bool) {
         self.suppressDuplicates = suppressDuplicates
         self.m06Timing = false
+        self.emitAccessUnitDelimiter = false
     }
 
-    init(suppressDuplicates: Bool, m06Timing: Bool) {
+    init(
+        suppressDuplicates: Bool,
+        m06Timing: Bool,
+        emitAccessUnitDelimiter: Bool = false
+    ) {
         self.suppressDuplicates = suppressDuplicates
         self.m06Timing = m06Timing
+        self.emitAccessUnitDelimiter = emitAccessUnitDelimiter
     }
 
     func makeNALUnitStream() -> AsyncStream<Data> {
@@ -314,7 +322,8 @@ final class H264FrameProducer: @unchecked Sendable {
             isRealTime: true,
             expectedFrameRate: fps,
             averageBitRate: bitrate,
-            quality: quality
+            quality: quality,
+            emitAccessUnitDelimiter: emitAccessUnitDelimiter
         ))
 
         enc.naluHandling = { [weak self] data in
