@@ -42,7 +42,8 @@ struct DeviceInfoMethodHandler: RPCMethodHandler {
                 .string("io.devicefarm.dupframe.suppress"),
                 .string("io.devicefarm.control-timing-v1"),
                 .string("io.devicefarm.swipe-duration-v2"),
-                .string("io.devicefarm.input-duration-v1")
+                .string("io.devicefarm.input-duration-v1"),
+                .string("io.devicefarm.button-home-inflight-capture-v1")
             ]),
             // R2: the exact runner commit this build was compiled from, injected
             // into the built bundle's Info.plist by prepare-ios-devicekit.sh.

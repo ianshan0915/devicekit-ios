@@ -55,6 +55,7 @@ describe("device.info", function () {
     assert.ok(result.capabilities.includes("io.devicefarm.control-timing-v1"));
     assert.ok(result.capabilities.includes("io.devicefarm.swipe-duration-v2"));
     assert.ok(result.capabilities.includes("io.devicefarm.input-duration-v1"));
+    assert.ok(result.capabilities.includes("io.devicefarm.button-home-inflight-capture-v1"));
   });
 
   it("ignores extra params", async function () {
