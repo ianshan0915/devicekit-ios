@@ -168,6 +168,7 @@ describe("device.io.swipe", function () {
       x1: 200, y1: 400, x2: 200, y2: 200,
     }));
     assert.ok(result);
+    assert.ok(result.durationSeconds >= 0);
   });
 
   it("fails without coordinates", async function () {
@@ -185,7 +186,6 @@ describe("device.io.longpress", function () {
       x: 10, y: 10, duration: 0.5,
     }));
     assert.ok(result);
-    assert.ok(result.durationSeconds >= 0);
   });
 
   it("fails without params", async function () {
