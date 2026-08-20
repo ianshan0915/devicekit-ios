@@ -49,7 +49,10 @@ struct IOGestureMethodHandler: RPCMethodHandler {
             try await executeGesture(fingerActions: fingerActions)
             let duration = Date().timeIntervalSince(start)
             logger.info("Gesture execution completed in \(duration)s")
-            return .object(["success": .bool(true)])
+            return .object([
+                "success": .bool(true),
+                "durationSeconds": .double(duration),
+            ])
         } catch let error as RPCMethodError {
             throw error
         } catch {

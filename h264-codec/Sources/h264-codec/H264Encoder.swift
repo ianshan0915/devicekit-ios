@@ -12,6 +12,7 @@ public struct H264EncoderConfig {
     public let expectedFrameRate: Int
     public let averageBitRate: Int
     public let quality: Float
+    public let emitAccessUnitDelimiter: Bool
 
     public init(
         width: Int32,
@@ -19,7 +20,8 @@ public struct H264EncoderConfig {
         isRealTime: Bool,
         expectedFrameRate: Int,
         averageBitRate: Int,
-        quality: Float
+        quality: Float,
+        emitAccessUnitDelimiter: Bool = false
     ) {
         self.width = width
         self.height = height
@@ -27,6 +29,7 @@ public struct H264EncoderConfig {
         self.expectedFrameRate = expectedFrameRate
         self.averageBitRate = averageBitRate
         self.quality = quality
+        self.emitAccessUnitDelimiter = emitAccessUnitDelimiter
     }
 }
 
@@ -38,8 +41,24 @@ public final class H264Encoder: NSObject {
     }
 
     private var session: VTCompressionSession?
+    private var emitAccessUnitDelimiter = false
 
     private static let naluStartCode = Data([UInt8](arrayLiteral: 0x00, 0x00, 0x00, 0x01))
+    // Close the current access unit with legal filler data, then begin the next
+    // one with AUD primary_pic_type=7 and a prefix SEI. The prefix SEI's start
+    // code lets a streaming Annex-B reader return the AUD immediately, while
+    // its NAL remains valid leading data for the next picture. In particular,
+    // filler must not follow an AUD because the AUD already starts the next AU.
+    private static let accessUnitBoundary =
+        naluStartCode + Data([0x0c, 0x80])
+        + naluStartCode + Data([0x09, 0xf0])
+        + naluStartCode + Data([
+            0x06,       // SEI NAL header
+            0x05, 0x10, // user_data_unregistered, 16-byte UUID payload
+            0x44, 0x45, 0x56, 0x49, 0x43, 0x45, 0x46, 0x41,
+            0x52, 0x4d, 0x2d, 0x42, 0x30, 0x39, 0x21, 0x21,
+            0x80,       // rbsp_trailing_bits
+        ])
 
     // uuid for timing SEI (user data unregistered)
     private static let timingUUID: [UInt8] = [
@@ -67,6 +86,7 @@ public final class H264Encoder: NSObject {
               let session = session else {
             throw ConfigurationError.cannotCreateSession
         }
+        emitAccessUnitDelimiter = config.emitAccessUnitDelimiter
 
         let propertyDictionary = [
             kVTCompressionPropertyKey_PixelTransferProperties: [
@@ -206,6 +226,10 @@ public final class H264Encoder: NSObject {
             packageStartIndex += (4 + naluLength)
 
             encoder.naluHandling?(naluData)
+        }
+
+        if encoder.emitAccessUnitDelimiter {
+            encoder.naluHandling?(H264Encoder.accessUnitBoundary)
         }
     }
 

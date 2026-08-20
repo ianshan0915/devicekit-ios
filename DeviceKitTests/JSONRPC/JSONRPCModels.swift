@@ -48,13 +48,21 @@ struct JSONRPCResponse: Encodable {
     let result: JSONValue?
     let error: JSONRPCError?
     let id: JSONRPCId?
+    /// M06 opt-in runner scheduling attribution. Omitted from ordinary RPCs so
+    /// the reviewed wire response remains unchanged unless `/rpc?m06_timing=1`
+    /// is explicitly requested.
+    let m06Timing: JSONValue?
 
     static func success(result: JSONValue?, id: JSONRPCId?) -> JSONRPCResponse {
-        JSONRPCResponse(result: result, error: nil, id: id)
+        JSONRPCResponse(result: result, error: nil, id: id, m06Timing: nil)
     }
 
     static func failure(error: JSONRPCError, id: JSONRPCId?) -> JSONRPCResponse {
-        JSONRPCResponse(result: nil, error: error, id: id)
+        JSONRPCResponse(result: nil, error: error, id: id, m06Timing: nil)
+    }
+
+    func withM06Timing(_ timing: JSONValue?) -> JSONRPCResponse {
+        JSONRPCResponse(result: result, error: error, id: id, m06Timing: timing)
     }
 }
 

@@ -13,14 +13,16 @@ Measures command start -> RPC completion and command start -> first materially
 changed decoded /h264 frame. Requests remain sequential.
 
   --base-url URL    DeviceKit URL (default: http://127.0.0.1:12004)
-  --action NAME     home or tap (default: home)
+  --action NAME     home, tap, or swipe (default: home)
   --tap X,Y         Required target for --action tap
+  --swipe X1,Y1,X2,Y2  Swipe endpoints (default: 187,600,187,200)
   --samples N       Measured samples (default: 30)
   --warmup N        Warm-up samples (default: 3)
   --fps N           /h264 capture rate (default: 60)
   --threshold N     Mean grayscale delta marking a changed frame (default: 8)
   --settle-ms N     State-settle delay (default: 800)
   --timeout-ms N    Per-sample changed-frame timeout (default: 3000)
+  --m06-timing 0|1  Diagnostic scheduling path; default 0 uses production RPC
   --ffmpeg PATH     ffmpeg executable (default: ffmpeg)
   --output PATH     Also write full JSON report
 `);
@@ -43,16 +45,26 @@ function point(value) {
   return values;
 }
 
+function coordinates(value, count, name) {
+  const values = value.split(",").map(Number);
+  if (values.length !== count || values.some((item) => !Number.isFinite(item))) {
+    usage(`${name} must contain ${count} comma-separated numbers`);
+  }
+  return values;
+}
+
 const options = {
   baseUrl: "http://127.0.0.1:12004",
   action: "home",
   tap: undefined,
+  swipe: [187, 600, 187, 200],
   samples: 30,
   warmup: 3,
   fps: 60,
   threshold: 8,
   settleMs: 800,
   timeoutMs: 3000,
+  m06Timing: 0,
   ffmpeg: "ffmpeg",
   output: undefined,
 };
@@ -66,19 +78,23 @@ for (let index = 2; index < process.argv.length; index += 1) {
     case "--base-url": options.baseUrl = value; break;
     case "--action": options.action = value; break;
     case "--tap": options.tap = point(value); break;
+    case "--swipe": options.swipe = coordinates(value, 4, key); break;
     case "--samples": options.samples = integer(value, key, 1); break;
     case "--warmup": options.warmup = integer(value, key); break;
     case "--fps": options.fps = integer(value, key, 1); break;
     case "--threshold": options.threshold = Number(value); break;
     case "--settle-ms": options.settleMs = integer(value, key); break;
     case "--timeout-ms": options.timeoutMs = integer(value, key, 1); break;
+    case "--m06-timing": options.m06Timing = integer(value, key); break;
     case "--ffmpeg": options.ffmpeg = value; break;
     case "--output": options.output = value; break;
     default: usage(`unknown option: ${key}`);
   }
 }
 
-if (!["home", "tap"].includes(options.action)) usage("--action must be home or tap");
+if (options.m06Timing > 1) usage("--m06-timing must be 0 or 1");
+
+if (!["home", "tap", "swipe"].includes(options.action)) usage("--action must be home, tap, or swipe");
 if (options.action === "tap" && !options.tap) usage("--action tap requires --tap X,Y");
 if (!Number.isFinite(options.threshold) || options.threshold <= 0) {
   usage("--threshold must be positive");
@@ -96,7 +112,7 @@ function rpc(method, params = {}) {
       protocol: baseUrl.protocol,
       hostname: baseUrl.hostname,
       port: baseUrl.port,
-      path: "/rpc",
+      path: options.m06Timing ? "/rpc?m06_timing=1" : "/rpc",
       method: "POST",
       agent,
       headers: {
@@ -115,7 +131,7 @@ function rpc(method, params = {}) {
           return;
         }
         if (payload.error) reject(new Error(payload.error.message));
-        else resolve(payload.result);
+        else resolve({ result: payload.result, m06Timing: payload.m06Timing });
       });
     });
     request.on("error", reject);
@@ -214,6 +230,7 @@ h264Url.searchParams.set("fps", String(options.fps));
 h264Url.searchParams.set("scale", "75");
 h264Url.searchParams.set("bitrate", "8000000");
 h264Url.searchParams.set("quality", "80");
+if (options.m06Timing) h264Url.searchParams.set("m06_timing", "1");
 
 const ffmpeg = spawn(options.ffmpeg, [
   "-hide_banner", "-loglevel", "warning",
@@ -233,7 +250,7 @@ ffmpeg.stderr.on("data", (chunk) => {
 });
 
 async function setInitialState() {
-  if (options.action === "home") {
+  if (options.action === "home" || options.action === "swipe") {
     await rpc("device.apps.launch", { bundleId: "com.apple.Preferences" });
   } else {
     await rpc("device.io.button", { button: "home" });
@@ -241,14 +258,22 @@ async function setInitialState() {
   await sleep(options.settleMs);
 }
 
-async function issueAction() {
+async function issueAction(sampleIndex) {
   if (options.action === "home") {
     return rpc("device.io.button", { button: "home" });
   }
-  return rpc("device.io.tap", { x: options.tap[0], y: options.tap[1] });
+  if (options.action === "tap") {
+    return rpc("device.io.tap", { x: options.tap[0], y: options.tap[1] });
+  }
+  const points = sampleIndex % 2 === 0
+    ? options.swipe
+    : [options.swipe[2], options.swipe[3], options.swipe[0], options.swipe[1]];
+  return rpc("device.io.swipe", {
+    x1: points[0], y1: points[1], x2: points[2], y2: points[3],
+  });
 }
 
-async function sample() {
+async function sample(sampleIndex) {
   await setInitialState();
   const reference = Buffer.from(frames.latest);
   const sequence = frames.sequence;
@@ -259,16 +284,20 @@ async function sample() {
     options.threshold,
     options.timeoutMs
   );
-  const rpcCompletion = issueAction().then(() => performance.now());
-  const [changedFrame, rpcCompletedAt] = await Promise.all([
+  const rpcCompletion = issueAction(sampleIndex).then((payload) => ({
+    payload,
+    completedAt: performance.now(),
+  }));
+  const [changedFrame, rpcCompleted] = await Promise.all([
     changed,
     rpcCompletion,
   ]);
   return {
-    rpcMs: rpcCompletedAt - started,
+    rpcMs: rpcCompleted.completedAt - started,
     firstVisibleFrameMs: changedFrame.at - started,
     frameSequence: changedFrame.sequence,
     meanDelta: meanAbsoluteDifference(reference, changedFrame.frame),
+    m06Timing: rpcCompleted.payload.m06Timing,
   };
 }
 
@@ -282,10 +311,10 @@ try {
     })),
   ]);
 
-  for (let index = 0; index < options.warmup; index += 1) await sample();
+  for (let index = 0; index < options.warmup; index += 1) await sample(index);
   for (let index = 0; index < options.samples; index += 1) {
     try {
-      const result = await sample();
+      const result = await sample(options.warmup + index);
       measured.push(result);
       console.log(`${index + 1}/${options.samples} rpc=${result.rpcMs.toFixed(1)} ms visible=${result.firstVisibleFrameMs.toFixed(1)} ms delta=${result.meanDelta.toFixed(1)}`);
     } catch (error) {
@@ -303,6 +332,18 @@ const report = {
   configuration: options,
   rpc: summary(measured.map((item) => item.rpcMs)),
   firstVisibleFrame: summary(measured.map((item) => item.firstVisibleFrameMs)),
+  m06Scheduling: Object.fromEntries(
+    [...new Set(measured.flatMap((item) => Object.keys(item.m06Timing ?? {})))]
+      .filter((key) => key !== "schemaVersion" && key !== "screenshotActiveAtArrival")
+      .map((key) => [
+        key,
+        summary(measured.map((item) => item.m06Timing?.[key]).filter(Number.isFinite)),
+      ])
+  ),
+  screenshotActiveAtArrival: {
+    count: measured.filter((item) => item.m06Timing?.screenshotActiveAtArrival === true).length,
+    total: measured.filter((item) => item.m06Timing !== undefined).length,
+  },
   failures,
   samples: measured,
 };

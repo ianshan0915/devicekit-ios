@@ -35,9 +35,18 @@ final class JSONRPCDispatcher {
         handlers[T.methodName] = handler
     }
 
-    func dispatch(_ data: Data) async -> Data {
+    func dispatch(
+        _ data: Data,
+        m06RequestArrival: M06ControlTimingState.RequestArrival? = nil
+    ) async -> Data {
+        let mainActorStartedAtNs = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
         let response = await processRequest(data)
-        return encodeResponse(response)
+        let handlerCompletedAtNs = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
+        let timing = m06RequestArrival?.responseTiming(
+            mainActorStartedAtNs: mainActorStartedAtNs,
+            handlerCompletedAtNs: handlerCompletedAtNs
+        )
+        return encodeResponse(response.withM06Timing(timing))
     }
 
     func dispatch(_ message: String) async -> String {

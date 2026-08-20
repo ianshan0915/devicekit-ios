@@ -8,9 +8,12 @@ final class EventRecord: NSObject {
     static let defaultTapDuration = 0.1
 
     /// Short enough to make ordinary remote taps responsive while remaining
-    /// above the lowest plateau measured reliably on physical iPhones. Swipe
-    /// and gesture timing intentionally keep `defaultTapDuration`.
+    /// above the lowest plateau measured reliably on physical iPhones.
     static let remoteTapDuration = 0.01
+
+    /// A short stationary endpoint avoids turning a bounded remote scroll into
+    /// a zero-dwell fling while still removing 80 ms of the old 100 ms dwell.
+    static let remoteSwipeReleaseDwell = 0.02
 
     enum Style: String {
         case singleFinger = "Single-Finger Touch Action"
@@ -39,9 +42,14 @@ final class EventRecord: NSObject {
 
     func addSwipeEvent(start: CGPoint, end: CGPoint, duration: TimeInterval) -> Self {
         var path = PointerEventPath.pathForTouch(at: start)
-        path.offset += Self.defaultTapDuration
-        path.moveTo(point: end)
+        // The endpoint timestamp defines the swipe's motion duration. The old
+        // shape moved for defaultTapDuration (100 ms), then added `duration`
+        // again before lift-up, leaving the finger stationary at the endpoint
+        // for another 100 ms. Keep a bounded 20 ms release dwell so scrolling
+        // settles predictably without paying the old full dwell.
         path.offset += duration
+        path.moveTo(point: end)
+        path.offset += Self.remoteSwipeReleaseDwell
         path.liftUp()
         return add(path)
     }

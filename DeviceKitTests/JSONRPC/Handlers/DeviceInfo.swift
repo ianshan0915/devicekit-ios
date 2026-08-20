@@ -39,7 +39,12 @@ struct DeviceInfoMethodHandler: RPCMethodHandler {
                 // duplicate-frame suppression so device.info can confirm what a
                 // phone actually carries (the prepare script warns experimental
                 // runners must advertise their own capability).
-                .string("io.devicefarm.dupframe.suppress")
+                .string("io.devicefarm.dupframe.suppress"),
+                .string("io.devicefarm.control-timing-v1"),
+                .string("io.devicefarm.swipe-duration-v2"),
+                .string("io.devicefarm.tap-duration-v1"),
+                .string("io.devicefarm.gesture-duration-v1"),
+                .string("io.devicefarm.h264-trailing-aud-v1")
             ]),
             // R2: the exact runner commit this build was compiled from, injected
             // into the built bundle's Info.plist by prepare-ios-devicekit.sh.

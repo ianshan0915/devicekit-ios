@@ -51,6 +51,8 @@ final class H264FrameProducer: @unchecked Sendable {
     // semantics. Capture runs at the full configured rate and a changed frame
     // is encoded immediately, so suppression never delays motion or control.
     private let suppressDuplicates: Bool
+    private let m06Timing: Bool
+    private let emitAccessUnitDelimiter: Bool
     private var referenceData: Data?          // stride-aware copy of last emitted frame
     private var lastEmittedAtNs: UInt64 = 0   // monotonic clock of last encode
     private var lastIDRAtNs: UInt64 = 0       // monotonic clock of last keyframe
@@ -81,17 +83,37 @@ final class H264FrameProducer: @unchecked Sendable {
 
     init() {
         self.suppressDuplicates = true
+        self.m06Timing = false
+        self.emitAccessUnitDelimiter = false
     }
 
     init(suppressDuplicates: Bool) {
         self.suppressDuplicates = suppressDuplicates
+        self.m06Timing = false
+        self.emitAccessUnitDelimiter = false
+    }
+
+    init(
+        suppressDuplicates: Bool,
+        m06Timing: Bool,
+        emitAccessUnitDelimiter: Bool = false
+    ) {
+        self.suppressDuplicates = suppressDuplicates
+        self.m06Timing = m06Timing
+        self.emitAccessUnitDelimiter = emitAccessUnitDelimiter
     }
 
     func makeNALUnitStream() -> AsyncStream<Data> {
-        AsyncStream { continuation in
+        if m06Timing {
+            M06ControlTimingState.shared.instrumentedStreamStarted()
+        }
+        return AsyncStream { continuation in
             self.continuation = continuation
 
-            continuation.onTermination = { [weak self] _ in
+            continuation.onTermination = { [weak self, m06Timing] _ in
+                if m06Timing {
+                    M06ControlTimingState.shared.instrumentedStreamStopped()
+                }
                 self?.invalidateEncoder()
             }
         }
@@ -121,10 +143,19 @@ final class H264FrameProducer: @unchecked Sendable {
     ) async throws {
         let frameStart = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
 
-        guard let uiImage = try? FBScreenshot.captureUIImage(
+        if m06Timing {
+            M06ControlTimingState.shared.screenshotStarted(at: frameStart)
+        }
+        let capturedImage = try? FBScreenshot.captureUIImage(
             withQuality: 0.9,
             timeout: captureTimeout
-        ), let cgImage = uiImage.cgImage else {
+        )
+        if m06Timing {
+            M06ControlTimingState.shared.screenshotFinished(
+                at: clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
+            )
+        }
+        guard let uiImage = capturedImage, let cgImage = uiImage.cgImage else {
             throw H264Error.captureFailed
         }
 
@@ -297,7 +328,8 @@ final class H264FrameProducer: @unchecked Sendable {
             isRealTime: true,
             expectedFrameRate: fps,
             averageBitRate: bitrate,
-            quality: quality
+            quality: quality,
+            emitAccessUnitDelimiter: emitAccessUnitDelimiter
         ))
 
         enc.naluHandling = { [weak self] data in
