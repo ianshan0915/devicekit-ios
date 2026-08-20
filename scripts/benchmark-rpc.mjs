@@ -14,6 +14,7 @@ Options:
   --tap X,Y            Safe tap point in visible stream points (default: 10,10)
   --swipe X1,Y1,X2,Y2  Safe swipe coordinates (default: 10,10,10,10)
   --actions LIST       Comma-separated health,info,tap,home,swipe (default: all)
+  --m06-timing 0|1     Diagnostic scheduling path; default 0 uses production RPC
   --output PATH        Also write the complete JSON result to PATH
   --settle-ms N        Delay between requests (default: 50)
 `);
@@ -43,6 +44,7 @@ const options = {
   tap: [10, 10],
   swipe: [10, 10, 10, 10],
   actions: ["health", "info", "tap", "home", "swipe"],
+  m06Timing: 0,
   output: undefined,
   settleMs: 50,
 };
@@ -59,11 +61,14 @@ for (let index = 2; index < process.argv.length; index += 1) {
     case "--tap": options.tap = parsePoint(value, 2, key); break;
     case "--swipe": options.swipe = parsePoint(value, 4, key); break;
     case "--actions": options.actions = value.split(",").filter(Boolean); break;
+    case "--m06-timing": options.m06Timing = parseInteger(value, key); break;
     case "--output": options.output = value; break;
     case "--settle-ms": options.settleMs = parseInteger(value, key); break;
     default: usage(`unknown option: ${key}`);
   }
 }
+
+if (options.m06Timing > 1) usage("--m06-timing must be 0 or 1");
 
 const definitions = {
   health: { path: "/health", method: "GET" },
@@ -101,7 +106,7 @@ function request(definition) {
     let path = definition.path;
     let method = definition.method;
     if (definition.rpc) {
-      path = "/rpc?m06_timing=1";
+      path = options.m06Timing ? "/rpc?m06_timing=1" : "/rpc";
       method = "POST";
       body = JSON.stringify({
         jsonrpc: "2.0",

@@ -22,6 +22,7 @@ changed decoded /h264 frame. Requests remain sequential.
   --threshold N     Mean grayscale delta marking a changed frame (default: 8)
   --settle-ms N     State-settle delay (default: 800)
   --timeout-ms N    Per-sample changed-frame timeout (default: 3000)
+  --m06-timing 0|1  Diagnostic scheduling path; default 0 uses production RPC
   --ffmpeg PATH     ffmpeg executable (default: ffmpeg)
   --output PATH     Also write full JSON report
 `);
@@ -63,6 +64,7 @@ const options = {
   threshold: 8,
   settleMs: 800,
   timeoutMs: 3000,
+  m06Timing: 0,
   ffmpeg: "ffmpeg",
   output: undefined,
 };
@@ -83,11 +85,14 @@ for (let index = 2; index < process.argv.length; index += 1) {
     case "--threshold": options.threshold = Number(value); break;
     case "--settle-ms": options.settleMs = integer(value, key); break;
     case "--timeout-ms": options.timeoutMs = integer(value, key, 1); break;
+    case "--m06-timing": options.m06Timing = integer(value, key); break;
     case "--ffmpeg": options.ffmpeg = value; break;
     case "--output": options.output = value; break;
     default: usage(`unknown option: ${key}`);
   }
 }
+
+if (options.m06Timing > 1) usage("--m06-timing must be 0 or 1");
 
 if (!["home", "tap", "swipe"].includes(options.action)) usage("--action must be home, tap, or swipe");
 if (options.action === "tap" && !options.tap) usage("--action tap requires --tap X,Y");
@@ -107,7 +112,7 @@ function rpc(method, params = {}) {
       protocol: baseUrl.protocol,
       hostname: baseUrl.hostname,
       port: baseUrl.port,
-      path: "/rpc?m06_timing=1",
+      path: options.m06Timing ? "/rpc?m06_timing=1" : "/rpc",
       method: "POST",
       agent,
       headers: {
@@ -225,7 +230,7 @@ h264Url.searchParams.set("fps", String(options.fps));
 h264Url.searchParams.set("scale", "75");
 h264Url.searchParams.set("bitrate", "8000000");
 h264Url.searchParams.set("quality", "80");
-h264Url.searchParams.set("m06_timing", "1");
+if (options.m06Timing) h264Url.searchParams.set("m06_timing", "1");
 
 const ffmpeg = spawn(options.ffmpeg, [
   "-hide_banner", "-loglevel", "warning",

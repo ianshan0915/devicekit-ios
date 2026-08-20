@@ -104,10 +104,16 @@ final class H264FrameProducer: @unchecked Sendable {
     }
 
     func makeNALUnitStream() -> AsyncStream<Data> {
-        AsyncStream { continuation in
+        if m06Timing {
+            M06ControlTimingState.shared.instrumentedStreamStarted()
+        }
+        return AsyncStream { continuation in
             self.continuation = continuation
 
-            continuation.onTermination = { [weak self] _ in
+            continuation.onTermination = { [weak self, m06Timing] _ in
+                if m06Timing {
+                    M06ControlTimingState.shared.instrumentedStreamStopped()
+                }
                 self?.invalidateEncoder()
             }
         }

@@ -9,6 +9,7 @@ final class M06ControlTimingState: @unchecked Sendable {
 
     struct RequestArrival: Sendable {
         let receivedAtNs: UInt64
+        let screenshotInstrumented: Bool
         let screenshotActiveAtArrival: Bool
         let screenshotAgeAtArrivalNs: UInt64?
         let screenshotSequenceAtArrival: UInt64
@@ -35,6 +36,7 @@ final class M06ControlTimingState: @unchecked Sendable {
                         ? handlerCompletedAtNs - mainActorStartedAtNs
                         : 0
                 ),
+                "screenshotInstrumented": .bool(screenshotInstrumented),
                 "screenshotActiveAtArrival": .bool(screenshotActiveAtArrival),
                 "screenshotSequenceAtArrival": .int(Int(clamping: screenshotSequenceAtArrival))
             ]
@@ -52,12 +54,30 @@ final class M06ControlTimingState: @unchecked Sendable {
     }
 
     private let lock = NSLock()
+    private var instrumentedStreamCount = 0
     private var screenshotStartedAtNs: UInt64?
     private var screenshotSequence: UInt64 = 0
     private var lastScreenshotDurationNs: UInt64?
     private var lastScreenshotFinishedAtNs: UInt64?
 
     private init() {}
+
+    func instrumentedStreamStarted() {
+        lock.lock()
+        instrumentedStreamCount += 1
+        lock.unlock()
+    }
+
+    func instrumentedStreamStopped() {
+        lock.lock()
+        instrumentedStreamCount = max(0, instrumentedStreamCount - 1)
+        if instrumentedStreamCount == 0 {
+            screenshotStartedAtNs = nil
+            lastScreenshotDurationNs = nil
+            lastScreenshotFinishedAtNs = nil
+        }
+        lock.unlock()
+    }
 
     func screenshotStarted(at now: UInt64) {
         lock.lock()
@@ -82,6 +102,7 @@ final class M06ControlTimingState: @unchecked Sendable {
         let finished = lastScreenshotFinishedAtNs
         let arrival = RequestArrival(
             receivedAtNs: now,
+            screenshotInstrumented: instrumentedStreamCount > 0,
             screenshotActiveAtArrival: started != nil,
             screenshotAgeAtArrivalNs: started.map { now >= $0 ? now - $0 : 0 },
             screenshotSequenceAtArrival: screenshotSequence,
@@ -114,11 +135,9 @@ struct JSONRPCHTTPHandler: HTTPHandler, @unchecked Sendable {
 
         let bodyData = try await request.bodyData
         logReceived(bodyData)
-        let arrival = timingRequested
-            ? M06ControlTimingState.shared.requestArrived(
-                at: clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
-            )
-            : nil
+        let arrival = M06ControlTimingState.shared.requestArrived(
+            at: clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
+        )
 
         let responseData = await dispatcher.dispatch(
             bodyData,

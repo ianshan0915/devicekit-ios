@@ -44,13 +44,21 @@ public final class H264Encoder: NSObject {
     private var emitAccessUnitDelimiter = false
 
     private static let naluStartCode = Data([UInt8](arrayLiteral: 0x00, 0x00, 0x00, 0x01))
-    // AUD primary_pic_type=7 plus a standards-compliant filler NAL. A raw
-    // Annex-B reader needs the *following* start code before it can return the
-    // AUD, so the filler start is what makes the preceding picture available
-    // immediately instead of waiting for the next encoded picture. The filler
-    // itself becomes harmless leading non-VCL data for the next access unit.
+    // Close the current access unit with legal filler data, then begin the next
+    // one with AUD primary_pic_type=7 and a prefix SEI. The prefix SEI's start
+    // code lets a streaming Annex-B reader return the AUD immediately, while
+    // its NAL remains valid leading data for the next picture. In particular,
+    // filler must not follow an AUD because the AUD already starts the next AU.
     private static let accessUnitBoundary =
-        naluStartCode + Data([0x09, 0xf0]) + naluStartCode + Data([0x0c, 0x80])
+        naluStartCode + Data([0x0c, 0x80])
+        + naluStartCode + Data([0x09, 0xf0])
+        + naluStartCode + Data([
+            0x06,       // SEI NAL header
+            0x05, 0x10, // user_data_unregistered, 16-byte UUID payload
+            0x44, 0x45, 0x56, 0x49, 0x43, 0x45, 0x46, 0x41,
+            0x52, 0x4d, 0x2d, 0x42, 0x30, 0x39, 0x21, 0x21,
+            0x80,       // rbsp_trailing_bits
+        ])
 
     // uuid for timing SEI (user data unregistered)
     private static let timingUUID: [UInt8] = [

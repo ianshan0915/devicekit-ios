@@ -54,7 +54,9 @@ describe("device.info", function () {
     assert.ok(result.capabilities.includes("io.tap.count.2"));
     assert.ok(result.capabilities.includes("io.devicefarm.control-timing-v1"));
     assert.ok(result.capabilities.includes("io.devicefarm.swipe-duration-v2"));
-    assert.ok(result.capabilities.includes("io.devicefarm.input-duration-v1"));
+    assert.ok(result.capabilities.includes("io.devicefarm.tap-duration-v1"));
+    assert.ok(result.capabilities.includes("io.devicefarm.gesture-duration-v1"));
+    assert.ok(result.capabilities.includes("io.devicefarm.h264-trailing-aud-v1"));
   });
 
   it("ignores extra params", async function () {
@@ -70,6 +72,7 @@ describe("device.info", function () {
     assert.strictEqual(measured.m06Timing.schemaVersion, 1);
     assert.ok(measured.m06Timing.mainActorWaitMs >= 0);
     assert.ok(measured.m06Timing.handlerMs >= 0);
+    assert.strictEqual(measured.m06Timing.screenshotInstrumented, false);
     assert.strictEqual(typeof measured.m06Timing.screenshotActiveAtArrival, "boolean");
   });
 });
@@ -165,7 +168,6 @@ describe("device.io.swipe", function () {
       x1: 200, y1: 400, x2: 200, y2: 200,
     }));
     assert.ok(result);
-    assert.ok(result.durationSeconds >= 0);
   });
 
   it("fails without coordinates", async function () {
@@ -183,6 +185,7 @@ describe("device.io.longpress", function () {
       x: 10, y: 10, duration: 0.5,
     }));
     assert.ok(result);
+    assert.ok(result.durationSeconds >= 0);
   });
 
   it("fails without params", async function () {
@@ -203,6 +206,7 @@ describe("device.io.gesture", function () {
       ],
     }));
     assert.ok(result);
+    assert.ok(result.durationSeconds >= 0);
   });
 
   it("fails without actions", async function () {
