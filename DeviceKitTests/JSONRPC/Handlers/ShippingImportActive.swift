@@ -11,7 +11,7 @@ struct ShippingImportActiveMethodHandler: RPCMethodHandler {
 
     func execute(params: JSONValue?) async throws -> JSONValue {
         do {
-            let inbox = try ShippingInbox()
+            let inbox = try shippingInbox()
             let requests = try inbox.activeRequests().map { request -> JSONValue in
                 // A request that reaches a terminal state between the scan and this
                 // lookup is simply no longer active; report it as still waiting

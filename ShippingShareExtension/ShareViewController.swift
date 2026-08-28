@@ -15,6 +15,9 @@ private enum ShareExtensionError: LocalizedError {
 final class ShareViewController: UIViewController {
     private let messageLabel = UILabel()
     private var didStart = false
+    private lazy var inboxResult: Result<ShippingInbox, Error> = Result {
+        try ShippingInbox()
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -41,14 +44,15 @@ final class ShareViewController: UIViewController {
     @MainActor
     private func receivePDF() async {
         do {
+            let inbox = try inboxResult.get()
             let provider = try singlePDFProvider()
-            _ = try await importPDF(from: provider)
+            _ = try await importPDF(from: provider, inbox: inbox)
             messageLabel.text = "Shipping label saved"
             try? await Task.sleep(nanoseconds: 350_000_000)
             extensionContext?.completeRequest(returningItems: nil)
         } catch {
             messageLabel.text = error.localizedDescription
-            _ = try? ShippingInbox().recordFailure(error)
+            _ = try? inboxResult.get().recordFailure(error)
             let underlyingError = error as NSError
             NSLog(
                 "Shipping label import failed (domain=%@ code=%ld): %@",
@@ -80,7 +84,10 @@ final class ShareViewController: UIViewController {
         return provider
     }
 
-    private func importPDF(from provider: NSItemProvider) async throws -> ShippingImportManifest {
+    private func importPDF(
+        from provider: NSItemProvider,
+        inbox: ShippingInbox
+    ) async throws -> ShippingImportManifest {
         try await awaitShippingImport(timeoutSeconds: 15) { claimImport, completion in
             provider.loadFileRepresentation(
                 forTypeIdentifier: UTType.pdf.identifier
@@ -96,7 +103,7 @@ final class ShareViewController: UIViewController {
                 }
 
                 do {
-                    completion(.success(try ShippingInbox().importPDF(from: url)))
+                    completion(.success(try inbox.importPDF(from: url)))
                 } catch {
                     completion(.failure(error))
                 }

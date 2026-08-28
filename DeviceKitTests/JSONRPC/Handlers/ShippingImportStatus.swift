@@ -9,7 +9,7 @@ struct ShippingImportStatusMethodHandler: RPCMethodHandler {
         do {
             return .object(
                 shippingStatusFields(
-                    try ShippingInbox().status(requestID: shippingRequestID(request.requestId))
+                    try shippingInbox().status(requestID: shippingRequestID(request.requestId))
                 )
             )
         } catch {

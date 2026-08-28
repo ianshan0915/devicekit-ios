@@ -55,7 +55,7 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
         let timeoutSeconds = min(max(request.timeoutSeconds ?? 15, 1), 30)
         let inbox: ShippingInbox
         do {
-            inbox = try ShippingInbox()
+            inbox = try shippingInbox()
             switch try inbox.status(requestID: requestID) {
             case .ready(let manifest):
                 return readyJSON(manifest)

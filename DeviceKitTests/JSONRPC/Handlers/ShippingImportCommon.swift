@@ -1,5 +1,18 @@
 import Foundation
 
+/// One inbox per runner process. Constructing an inbox performs stale-request
+/// recovery under the cross-process lock, so rebuilding it for every 512 KiB
+/// read chunk turns a 25 MiB transfer into 50 unnecessary full-container scans.
+@MainActor
+private enum ShippingInboxProvider {
+    static let result = Result { try ShippingInbox() }
+}
+
+@MainActor
+func shippingInbox() throws -> ShippingInbox {
+    try ShippingInboxProvider.result.get()
+}
+
 struct ShippingImportRequestID: Decodable {
     let requestId: String
 }

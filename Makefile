@@ -15,7 +15,7 @@ CODE_SIGN_IDENTITY ?= Apple Development
 # Export method for IPA (development, ad-hoc, app-store, enterprise)
 EXPORT_METHOD ?= development
 
-.PHONY: clean build archive ipa-unsigned sim-zip-arm64 sim-zip-x86_64 sim-zip sim-install test-coverage coverage-html lint
+.PHONY: clean build archive ipa-unsigned sim-zip-arm64 sim-zip-x86_64 sim-zip sim-install test-shipping test-coverage coverage-html lint
 
 clean:
 	@echo "Cleaning build artifacts..."
@@ -108,6 +108,10 @@ sim-install:
 	xcrun simctl install "$$BOOTED" "$$PRODUCTS/$(SCHEME).app"; \
 	xcrun simctl install "$$BOOTED" "$$PRODUCTS/$(SCHEME)UITests-Runner.app"; \
 	echo "Installed on simulator $$BOOTED"
+
+# Run the platform-independent shipping inbox protocol tests.
+test-shipping:
+	swift test --package-path ShippingShared
 
 # Build, run mocha tests with code coverage
 test-coverage:

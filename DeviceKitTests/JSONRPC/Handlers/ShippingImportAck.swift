@@ -8,7 +8,7 @@ struct ShippingImportAckMethodHandler: RPCMethodHandler {
         let request = try decodeParams(ShippingImportAckRequest.self, from: params)
         do {
             return shippingTerminalJSON(
-                try ShippingInbox().acknowledge(
+                try shippingInbox().acknowledge(
                     requestID: shippingRequestID(request.requestId),
                     sha256: request.sha256
                 )

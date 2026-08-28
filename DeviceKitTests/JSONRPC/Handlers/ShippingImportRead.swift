@@ -7,7 +7,7 @@ struct ShippingImportReadMethodHandler: RPCMethodHandler {
     func execute(params: JSONValue?) async throws -> JSONValue {
         let request = try decodeParams(ShippingImportReadRequest.self, from: params)
         do {
-            let chunk = try ShippingInbox().read(
+            let chunk = try shippingInbox().read(
                 requestID: shippingRequestID(request.requestId),
                 offset: request.offset,
                 maxBytes: request.maxBytes

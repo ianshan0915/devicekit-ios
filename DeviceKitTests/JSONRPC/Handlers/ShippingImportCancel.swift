@@ -8,7 +8,7 @@ struct ShippingImportCancelMethodHandler: RPCMethodHandler {
         let request = try decodeParams(ShippingImportRequestID.self, from: params)
         do {
             return shippingTerminalJSON(
-                try ShippingInbox().cancel(requestID: shippingRequestID(request.requestId))
+                try shippingInbox().cancel(requestID: shippingRequestID(request.requestId))
             )
         } catch {
             throw shippingRPCError(error)
