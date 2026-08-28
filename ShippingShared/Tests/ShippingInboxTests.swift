@@ -120,10 +120,37 @@ final class ShippingInboxTests: XCTestCase {
         }
 
         let tooLarge = root.appendingPathComponent("large.pdf")
-        try Data("%PDF-123456789".utf8).write(to: tooLarge)
+        try Data("%PDF-1.7\npadding beyond the limit\n%%EOF".utf8).write(to: tooLarge)
         XCTAssertThrowsError(try inbox.importPDF(from: tooLarge)) {
             XCTAssertEqual($0 as? ShippingInboxError, .sourceTooLarge)
         }
+    }
+
+    func testRejectsAFileThatOnlyMentionsThePDFMarker() throws {
+        try inbox.begin(requestID: UUID(), maxBytes: 1024)
+        // An error page that merely contains the literal marker passed the old
+        // "%PDF- appears somewhere" sniff.
+        let decoy = root.appendingPathComponent("decoy.pdf")
+        try Data("<html>could not render %PDF- document</html>\n%%EOF".utf8).write(to: decoy)
+
+        XCTAssertThrowsError(try inbox.importPDF(from: decoy)) {
+            XCTAssertEqual($0 as? ShippingInboxError, .sourceNotPDF)
+        }
+    }
+
+    func testRejectsAPDFThatLostItsTrailer() throws {
+        let requestID = UUID()
+        try inbox.begin(requestID: requestID, maxBytes: 1024)
+        // A share interrupted mid-transfer keeps a valid header and a plausible
+        // size, and used to commit as a healthy import no reader can open.
+        let truncated = root.appendingPathComponent("truncated.pdf")
+        try Data("%PDF-1.7\nbody that never finished".utf8).write(to: truncated)
+
+        XCTAssertThrowsError(try inbox.importPDF(from: truncated)) {
+            XCTAssertEqual($0 as? ShippingInboxError, .sourceTruncated)
+        }
+        // Nothing partial is left behind, and the request can still be retried.
+        XCTAssertEqual(try inbox.status(requestID: requestID), .waiting)
     }
 
     func testAcceptsPDFHeaderWithinFirstKilobyte() throws {

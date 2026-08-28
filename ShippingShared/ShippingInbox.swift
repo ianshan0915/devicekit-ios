@@ -14,6 +14,7 @@ public enum ShippingInboxError: Error, Equatable, LocalizedError {
     case requestCancelled
     case sourceNotPDF
     case sourceTooLarge
+    case sourceTruncated
     case invalidReadRange
     case digestMismatch
     case importCorrupted
@@ -32,6 +33,7 @@ public enum ShippingInboxError: Error, Equatable, LocalizedError {
         case .requestCancelled: "Saving this shipping label was cancelled."
         case .sourceNotPDF: "The shared file is not a PDF."
         case .sourceTooLarge: "The shared PDF is too large."
+        case .sourceTruncated: "The shared PDF is incomplete — try sharing it again."
         case .invalidReadRange: "The requested PDF range is invalid."
         case .digestMismatch: "The shipping label checksum does not match."
         case .importCorrupted: "The saved shipping label is incomplete."
@@ -52,6 +54,7 @@ public enum ShippingInboxError: Error, Equatable, LocalizedError {
         case .requestCancelled: "request_cancelled"
         case .sourceNotPDF: "source_not_pdf"
         case .sourceTooLarge: "source_too_large"
+        case .sourceTruncated: "source_truncated"
         case .invalidReadRange: "invalid_read_range"
         case .digestMismatch: "digest_mismatch"
         case .importCorrupted: "import_corrupted"
@@ -204,6 +207,7 @@ public final class ShippingInbox: @unchecked Sendable {
     public static let appGroupIdentifier = "group.nl.yj-commerce.media.shipping"
     public static let maximumAllowedBytes = 25 * 1024 * 1024
     public static let maximumChunkBytes = 512 * 1024
+    public static let trailerWindowBytes = 1024
     public static let retentionInterval: TimeInterval = 24 * 60 * 60
 
     private let rootURL: URL
@@ -305,8 +309,8 @@ public final class ShippingInbox: @unchecked Sendable {
 
         let input = try FileHandle(forReadingFrom: sourceURL)
         defer { try? input.close() }
-        let headerWindow = try input.read(upToCount: 1024) ?? Data()
-        guard headerWindow.range(of: Data("%PDF-".utf8)) != nil else {
+        let headerWindow = try input.read(upToCount: Self.trailerWindowBytes) ?? Data()
+        guard hasPDFHeader(in: headerWindow) else {
             throw ShippingInboxError.sourceNotPDF
         }
         try input.seek(toOffset: 0)
@@ -347,6 +351,10 @@ public final class ShippingInbox: @unchecked Sendable {
         guard copiedSize == byteCount else {
             try? fileManager.removeItem(at: partialURL)
             throw ShippingInboxError.importCorrupted
+        }
+        guard try hasPDFTrailer(at: partialURL, byteCount: byteCount) else {
+            try? fileManager.removeItem(at: partialURL)
+            throw ShippingInboxError.sourceTruncated
         }
         let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
 
@@ -770,6 +778,44 @@ public final class ShippingInbox: @unchecked Sendable {
             ofItemAtPath: url.path
         )
         #endif
+    }
+
+    /// A PDF header may legitimately sit past byte 0 — the spec allows it anywhere
+    /// in the first kilobyte, and Safari sometimes prepends a small transport
+    /// prefix, which is why the bytes are still stored verbatim. But "contains
+    /// %PDF- somewhere" also matches an HTML error page that merely mentions it,
+    /// so require the version digits a real header is followed by.
+    private func hasPDFHeader(in window: Data) -> Bool {
+        let bytes = Array(window)
+        let marker = Array("%PDF-".utf8)
+        guard bytes.count >= marker.count + 3 else { return false }
+        func isDigit(_ byte: UInt8) -> Bool {
+            byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9")
+        }
+        for start in 0...(bytes.count - marker.count - 3)
+        where Array(bytes[start..<(start + marker.count)]) == marker {
+            let version = start + marker.count
+            if isDigit(bytes[version]),
+               bytes[version + 1] == UInt8(ascii: "."),
+               isDigit(bytes[version + 2]) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// A label that lost its tail — a share interrupted mid-transfer — still has a
+    /// valid header and a plausible size, and would otherwise commit as a healthy
+    /// import that no reader can open. The trailer is checked on the bytes actually
+    /// written, so a source that changed underneath the copy is caught too.
+    private func hasPDFTrailer(at url: URL, byteCount: Int) throws -> Bool {
+        let window = min(byteCount, Self.trailerWindowBytes)
+        guard window > 0 else { return false }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(byteCount - window))
+        let tail = try handle.read(upToCount: window) ?? Data()
+        return tail.range(of: Data("%%EOF".utf8)) != nil
     }
 
     private func fileSize(at url: URL) throws -> Int {
