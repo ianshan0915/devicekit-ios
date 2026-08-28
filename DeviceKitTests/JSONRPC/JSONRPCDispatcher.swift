@@ -29,6 +29,12 @@ final class JSONRPCDispatcher {
         registerHandler(AppsForegroundMethodHandler())
         registerHandler(FileSaveMethodHandler())
         registerHandler(IOAppSwitcherMethodHandler())
+        registerHandler(ShippingImportBeginMethodHandler())
+        registerHandler(ShippingImportStatusMethodHandler())
+        registerHandler(ShippingImportReadMethodHandler())
+        registerHandler(ShippingImportAckMethodHandler())
+        registerHandler(ShippingImportCancelMethodHandler())
+        registerHandler(ShippingShareCurrentPdfMethodHandler())
     }
 
     func registerHandler<T: RPCMethodHandler>(_ handler: T) {

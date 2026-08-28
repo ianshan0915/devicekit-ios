@@ -90,6 +90,14 @@ struct JSONRPCError: Codable {
     static func preconditionFailed(message: String) -> JSONRPCError {
         JSONRPCError(code: -32001, message: message)
     }
+
+    static func operation(code: String, message: String) -> JSONRPCError {
+        JSONRPCError(
+            code: -32001,
+            message: message,
+            data: .object(["code": .string(code)])
+        )
+    }
 }
 
 enum JSONValue: Codable, Equatable {

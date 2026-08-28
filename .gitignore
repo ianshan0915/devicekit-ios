@@ -50,3 +50,8 @@ coverage-html/
 *.key
 .env
 ExportOptions.plist
+# SPM package clones and derived data (local build state)
+.build/
+.spm-packages/
+build-signed/
+build-unsigned/

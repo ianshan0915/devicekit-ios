@@ -28,7 +28,19 @@ struct DeviceInfoMethodHandler: RPCMethodHandler {
         ])
         return .object([
             "screenSize": screenSize,
-            "scale": .double(Double(scale))
+            "scale": .double(Double(scale)),
+            "capabilities": .array([
+                .string("shipping.pdfImport.v1")
+            ]),
+            "shipping.pdfImport": .object([
+                "protocol": .int(ShippingInbox.protocolVersion),
+                "maxBytes": .int(ShippingInbox.maximumAllowedBytes),
+                "chunkBytes": .int(ShippingInbox.maximumChunkBytes),
+            ]),
+            "commitSHA": .string(
+                (Bundle.main.object(forInfoDictionaryKey: "DeviceKitCommitSHA") as? String)
+                    ?? "unknown"
+            )
         ])
     }
 }
