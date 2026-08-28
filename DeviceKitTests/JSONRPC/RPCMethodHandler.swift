@@ -30,6 +30,7 @@ enum RPCMethodError: Error {
     case invalidParams(String)
     case internalError(String)
     case timeout(String)
+    case operation(code: String, message: String)
 
     var jsonRPCError: JSONRPCError {
         switch self {
@@ -39,6 +40,8 @@ enum RPCMethodError: Error {
             return .internalError(message: message)
         case .timeout(let message):
             return .timeout(message: message)
+        case .operation(let code, let message):
+            return .operation(code: code, message: message)
         }
     }
 }

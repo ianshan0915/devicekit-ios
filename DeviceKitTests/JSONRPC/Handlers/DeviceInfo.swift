@@ -44,7 +44,13 @@ struct DeviceInfoMethodHandler: RPCMethodHandler {
                 .string("io.devicefarm.swipe-duration-v2"),
                 .string("io.devicefarm.tap-duration-v1"),
                 .string("io.devicefarm.gesture-duration-v1"),
-                .string("io.devicefarm.h264-trailing-aud-v1")
+                .string("io.devicefarm.h264-trailing-aud-v1"),
+                .string("shipping.pdfImport.v1")
+            ]),
+            "shipping.pdfImport": .object([
+                "protocol": .int(ShippingInbox.protocolVersion),
+                "maxBytes": .int(ShippingInbox.maximumAllowedBytes),
+                "chunkBytes": .int(ShippingInbox.maximumChunkBytes),
             ]),
             // R2: the exact runner commit this build was compiled from, injected
             // into the built bundle's Info.plist by prepare-ios-devicekit.sh.
