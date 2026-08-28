@@ -64,8 +64,19 @@ make sim-zip
 | `make sim-zip-arm64` | `build/export/devicekit-ios-Sim-arm64.zip` | Simulator runner (Apple Silicon) |
 | `make sim-zip-x86_64` | `build/export/devicekit-ios-Sim-x86_64.zip` | Simulator runner (Intel) |
 | `make sim-zip` | Both simulator zips | arm64 + x86_64 |
+| `make test-shipping` | — | Shipping PDF inbox protocol tests |
 | `make lint` | — | Run SwiftLint |
 | `make clean` | — | Remove build artifacts |
+
+### Shipping Share Extension packaging
+
+Xcode embeds `ShippingShareExtension.appex` in `devicekit-ios.app` as a staging
+product. The installable XCUITest runner is synthesized separately and does not
+receive that extension automatically. A distributor must copy the staged
+extension into the final runner's `PlugIns/` directory, apply matching explicit
+App Group profiles to the runner and extension, sign child-first, and verify the
+final bundle before installation. The raw `make ipa-unsigned` artifact does not
+provide shipping-label sharing on its own.
 
 ## Quick Start
 

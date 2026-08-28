@@ -33,6 +33,9 @@ public struct H264EncoderConfig {
     }
 }
 
+// The encoder owns one VideoToolbox session lifecycle; splitting it solely to
+// satisfy the warning threshold would obscure that lifecycle.
+// swiftlint:disable:next type_body_length
 public final class H264Encoder: NSObject {
     enum ConfigurationError: Error {
         case cannotCreateSession
@@ -57,7 +60,7 @@ public final class H264Encoder: NSObject {
             0x05, 0x10, // user_data_unregistered, 16-byte UUID payload
             0x44, 0x45, 0x56, 0x49, 0x43, 0x45, 0x46, 0x41,
             0x52, 0x4d, 0x2d, 0x42, 0x30, 0x39, 0x21, 0x21,
-            0x80,       // rbsp_trailing_bits
+            0x80        // rbsp_trailing_bits
         ])
 
     // uuid for timing SEI (user data unregistered)
