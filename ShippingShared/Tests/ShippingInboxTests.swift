@@ -380,7 +380,7 @@ final class ShippingInboxTests: XCTestCase {
         XCTAssertNoThrow(try restarted.begin(requestID: UUID(), maxBytes: 1024))
     }
 
-    func testTornTerminalReceiptKeepsTheRequestVisibleInsteadOfWedging() throws {
+    func testTornTerminalReceiptStaysRecoverable() throws {
         let requestID = UUID()
         try inbox.begin(requestID: requestID, maxBytes: 1024)
         // A crash between writing the receipt and clearing the request file leaves
@@ -400,8 +400,32 @@ final class ShippingInboxTests: XCTestCase {
             rootURL: root,
             now: { Date(timeIntervalSince1970: 1_800_000_000) }
         )
-        // Fail safe: still visible and cancellable, rather than unopenable.
+        // Visible is only half of it — an earlier version of this test asserted
+        // only this line while cancel still threw, so the slot stayed wedged.
         XCTAssertEqual(try restarted.activeRequests().map(\.requestID), [requestID])
+
+        let terminal = try restarted.cancel(requestID: requestID)
+        XCTAssertEqual(terminal.state, .cancelled)
+        XCTAssertNoThrow(try restarted.begin(requestID: UUID(), maxBytes: 1024))
+    }
+
+    func testTornTerminalReceiptWithNoRequestFileIsNotSilentlyDiscarded() throws {
+        let requestID = UUID()
+        let importDirectory = root
+            .appendingPathComponent("Imports", isDirectory: true)
+            .appendingPathComponent(requestID.uuidString.lowercased(), isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: importDirectory,
+            withIntermediateDirectories: true
+        )
+        try Data("{ truncated".utf8).write(
+            to: importDirectory.appendingPathComponent("terminal.json")
+        )
+
+        // No request file means the receipt may belong to an acknowledged import.
+        // Dropping it would resurrect a request whose bytes were already released,
+        // so this stays an error rather than a silent repair.
+        XCTAssertThrowsError(try inbox.cancel(requestID: requestID))
     }
 
     func testInitializationPurgesRequestsOlderThanRetentionWindow() throws {

@@ -347,14 +347,19 @@ public final class ShippingInbox: @unchecked Sendable {
             throw error
         }
 
-        let copiedSize = try fileSize(at: partialURL)
-        guard copiedSize == byteCount else {
+        // Every post-copy check discards the partial, including when the check
+        // itself throws — guarding each one separately left the partial behind on
+        // a throwing `fileSize` or `hasPDFTrailer`, to linger until the purge.
+        do {
+            guard try fileSize(at: partialURL) == byteCount else {
+                throw ShippingInboxError.importCorrupted
+            }
+            guard try hasPDFTrailer(at: partialURL, byteCount: byteCount) else {
+                throw ShippingInboxError.sourceTruncated
+            }
+        } catch {
             try? fileManager.removeItem(at: partialURL)
-            throw ShippingInboxError.importCorrupted
-        }
-        guard try hasPDFTrailer(at: partialURL, byteCount: byteCount) else {
-            try? fileManager.removeItem(at: partialURL)
-            throw ShippingInboxError.sourceTruncated
+            throw error
         }
         let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
 
@@ -513,7 +518,7 @@ public final class ShippingInbox: @unchecked Sendable {
     @discardableResult
     public func cancel(requestID: UUID) throws -> ShippingImportTerminal {
         try withExclusiveLock {
-            if let terminal = try terminalIfPresent(requestID: requestID) {
+            if let terminal = try recoverableTerminal(requestID: requestID) {
                 guard terminal.state == .cancelled else {
                     throw ShippingInboxError.requestAcknowledged
                 }
@@ -686,6 +691,27 @@ public final class ShippingInbox: @unchecked Sendable {
         let url = terminalURL(for: requestID)
         guard fileManager.fileExists(atPath: url.path) else { return nil }
         return try decode(ShippingImportTerminal.self, from: url)
+    }
+
+    /// Cancel is the recovery path, so it must not be blocked by the corruption it
+    /// exists to clear. A request file present *alongside* an unreadable receipt can
+    /// only come from a crash between writing the receipt and clearing the request
+    /// file — an acknowledged or cancelled request has no request file left — so the
+    /// receipt holds nothing worth preserving and is dropped, letting the caller
+    /// write a fresh cancellation.
+    ///
+    /// With no request file the case is genuinely ambiguous: the bytes may belong to
+    /// an acknowledged import that must not be resurrected. That still throws.
+    private func recoverableTerminal(requestID: UUID) throws -> ShippingImportTerminal? {
+        do {
+            return try terminalIfPresent(requestID: requestID)
+        } catch {
+            guard fileManager.fileExists(atPath: requestURL(for: requestID).path) else {
+                throw error
+            }
+            try? fileManager.removeItem(at: terminalURL(for: requestID))
+            return nil
+        }
     }
 
     private func isCancelled(requestID: UUID) throws -> Bool {
