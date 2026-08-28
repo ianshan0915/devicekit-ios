@@ -35,7 +35,7 @@ public enum ShippingInboxError: Error, Equatable, LocalizedError {
         case .invalidReadRange: "The requested PDF range is invalid."
         case .digestMismatch: "The shipping label checksum does not match."
         case .importCorrupted: "The saved shipping label is incomplete."
-        case .extensionTimeout: "The shared PDF took too long to open."
+        case .extensionTimeout: "The shared PDF took too long to save."
         }
     }
 
@@ -139,20 +139,34 @@ private final class ShippingImportContinuationGate: @unchecked Sendable {
         continuation?.resume(with: result)
     }
 
+    /// Fires from `waiting` *or* `importing`. Covering only `waiting` left the
+    /// continuation unresumable once the provider callback had started: a copy that
+    /// blocked — a slow provider, or the inbox lock held by a wedged peer — hung the
+    /// Share Extension on "Saving shipping label…" with no deadline at all.
+    ///
+    /// Racing a copy that is about to succeed is safe: `finish` then finds
+    /// `finished` and is dropped, and the manifest it committed is still on disk for
+    /// the host to observe via `status`.
     func timeout() -> Bool {
         let continuation: CheckedContinuation<ShippingImportManifest, Error>? = lock.withLock {
-            guard case .waiting(let continuation) = state else { return nil }
-            state = .finished
-            return continuation
+            switch state {
+            case .waiting(let continuation), .importing(let continuation):
+                state = .finished
+                return continuation
+            case .finished:
+                return nil
+            }
         }
         continuation?.resume(throwing: ShippingInboxError.extensionTimeout)
         return continuation != nil
     }
 }
 
-/// Bridges an item-provider callback into one bounded async import. The gate
-/// deliberately accepts only the first callback so a provider completing after
-/// the timeout cannot resume the continuation twice.
+/// Bridges an item-provider callback into one bounded async import. `timeoutSeconds`
+/// is the budget for the whole operation — waiting for the provider *and* copying
+/// what it hands back — so no path can leave the caller suspended forever. The gate
+/// deliberately accepts only the first callback, so a provider completing after the
+/// timeout cannot resume the continuation twice.
 public func awaitShippingImport(
     timeoutSeconds: TimeInterval,
     start: (
@@ -178,8 +192,13 @@ public func awaitShippingImport(
 ///
 /// The host creates one request before invoking the extension. The extension copies
 /// one PDF to a private partial, fsyncs it, atomically renames it, and commits the
-/// manifest last. ACK and cancel leave a small terminal receipt so retries are
-/// idempotent while removing the PDF bytes from the phone.
+/// manifest last. Both ACK and cancel leave a small terminal receipt so retries
+/// are idempotent.
+///
+/// Only a digest-matching ACK removes the PDF bytes. Cancel cannot prove the host
+/// received them, so it releases the request slot but deliberately preserves an
+/// already-committed source and leaves it for `purgeStale` to remove after
+/// `retentionInterval` — a cancelled label stays on the phone for up to 24 hours.
 public final class ShippingInbox: @unchecked Sendable {
     public static let protocolVersion = 1
     public static let appGroupIdentifier = "group.nl.yj-commerce.media.shipping"
@@ -252,7 +271,7 @@ public final class ShippingInbox: @unchecked Sendable {
                     : ShippingInboxError.requestCancelled
             }
 
-            guard try activeRequests().isEmpty else {
+            guard try activeRequestsUnlocked().isEmpty else {
                 throw ShippingInboxError.anotherRequestIsActive
             }
             let request = ShippingImportRequest(
@@ -265,8 +284,12 @@ public final class ShippingInbox: @unchecked Sendable {
         }
     }
 
-    public func singleActiveRequest() throws -> ShippingImportRequest {
-        try withExclusiveLock { try requestForImportUnlocked() }
+    /// Every request that has not reached a terminal receipt yet — normally one,
+    /// or none. A host that lost its request id (session crash, or the phone moved
+    /// to a different host) recovers it here and cancels it, instead of being
+    /// locked out by `anotherRequestIsActive` until `retentionInterval` elapses.
+    public func activeRequests() throws -> [ShippingImportRequest] {
+        try withExclusiveLock { try activeRequestsUnlocked() }
     }
 
     @discardableResult
@@ -521,28 +544,39 @@ public final class ShippingInbox: @unchecked Sendable {
             var removed = 0
 
             for url in try requestFiles() {
-                let request = try decode(ShippingImportRequest.self, from: url)
+                guard let request = try? decode(ShippingImportRequest.self, from: url) else {
+                    // A readable-but-undecodable request is a torn write. It carries
+                    // no createdAt, so retention can never age it out, and every RPC
+                    // constructs a fresh inbox — leaving it would wedge the feature
+                    // permanently. A file we cannot even read is left alone: that is
+                    // more likely transient IO than garbage.
+                    if (try? Data(contentsOf: url)) != nil {
+                        try? fileManager.removeItem(at: url)
+                        removed += 1
+                    }
+                    continue
+                }
                 guard request.createdAt < cutoff else { continue }
-                try fileManager.removeItem(at: url)
+                try? fileManager.removeItem(at: url)
                 let directory = importURL(for: request.requestID)
                 if fileManager.fileExists(atPath: directory.path) {
-                    try fileManager.removeItem(at: directory)
+                    try? fileManager.removeItem(at: directory)
                 }
                 removed += 1
             }
 
-            let importDirectories = try fileManager.contentsOfDirectory(
+            let importDirectories = (try? fileManager.contentsOfDirectory(
                 at: importsURL,
                 includingPropertiesForKeys: [.contentModificationDateKey],
                 options: [.skipsHiddenFiles]
-            )
+            )) ?? []
             for directory in importDirectories {
                 guard let requestID = UUID(uuidString: directory.lastPathComponent),
                       !fileManager.fileExists(atPath: requestURL(for: requestID).path),
-                      try importDate(requestID: requestID, directory: directory) < cutoff else {
+                      importDate(requestID: requestID, directory: directory) < cutoff else {
                     continue
                 }
-                try fileManager.removeItem(at: directory)
+                try? fileManager.removeItem(at: directory)
                 removed += 1
             }
             return removed
@@ -598,14 +632,23 @@ public final class ShippingInbox: @unchecked Sendable {
         ).filter { $0.pathExtension == "json" }
     }
 
-    private func activeRequests() throws -> [ShippingImportRequest] {
+    /// Scanning skips entries it cannot read. One torn write must not make the
+    /// whole inbox unopenable — `init` purges and every RPC builds a fresh
+    /// instance, so a throw here would fail closed forever. Lookups keyed by a
+    /// specific request id stay strict and still surface corruption.
+    private func activeRequestsUnlocked() throws -> [ShippingImportRequest] {
         try requestFiles()
-            .map { try decode(ShippingImportRequest.self, from: $0) }
-            .filter { try terminalIfPresent(requestID: $0.requestID) == nil }
+            .compactMap { try? decode(ShippingImportRequest.self, from: $0) }
+            .filter { request in
+                // An unreadable receipt is read as "no receipt": the request stays
+                // visible and cancellable rather than silently releasing bytes that
+                // may never have been acknowledged.
+                ((try? terminalIfPresent(requestID: request.requestID)) ?? nil) == nil
+            }
     }
 
     private func requestForImportUnlocked() throws -> ShippingImportRequest {
-        let active = try activeRequests()
+        let active = try activeRequestsUnlocked()
         guard !active.isEmpty else { throw ShippingInboxError.noActiveRequest }
         guard active.count == 1 else { throw ShippingInboxError.multipleActiveRequests }
         return active[0]
@@ -665,19 +708,23 @@ public final class ShippingInbox: @unchecked Sendable {
         }
     }
 
-    private func importDate(requestID: UUID, directory: URL) throws -> Date {
-        if let terminal = try terminalIfPresent(requestID: requestID) {
+    /// Non-throwing for the same reason as `activeRequestsUnlocked`: this only
+    /// decides whether a directory has aged out, and must not fail the purge.
+    private func importDate(requestID: UUID, directory: URL) -> Date {
+        if let terminal = (try? terminalIfPresent(requestID: requestID)) ?? nil {
             return terminal.createdAt
         }
-        let manifest = manifestURL(for: requestID)
-        if fileManager.fileExists(atPath: manifest.path) {
-            return try decode(ShippingImportManifest.self, from: manifest).createdAt
+        if let manifest = try? decode(
+            ShippingImportManifest.self, from: manifestURL(for: requestID)
+        ) {
+            return manifest.createdAt
         }
-        let failure = failureURL(for: requestID)
-        if fileManager.fileExists(atPath: failure.path) {
-            return try decode(ShippingImportFailure.self, from: failure).createdAt
+        if let failure = try? decode(
+            ShippingImportFailure.self, from: failureURL(for: requestID)
+        ) {
+            return failure.createdAt
         }
-        return try directory.resourceValues(forKeys: [.contentModificationDateKey])
+        return (try? directory.resourceValues(forKeys: [.contentModificationDateKey]))?
             .contentModificationDate ?? .distantPast
     }
 

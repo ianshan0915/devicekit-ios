@@ -82,6 +82,7 @@
 		B20000012FA0000100000001 /* ShippingImportCommon.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000112FA0000100000001 /* ShippingImportCommon.swift */; };
 		B20000022FA0000100000001 /* ShippingImportBegin.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000122FA0000100000001 /* ShippingImportBegin.swift */; };
 		B20000032FA0000100000001 /* ShippingImportStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000132FA0000100000001 /* ShippingImportStatus.swift */; };
+		B20000082FA0000100000001 /* ShippingImportActive.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000182FA0000100000001 /* ShippingImportActive.swift */; };
 		B20000042FA0000100000001 /* ShippingImportRead.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000142FA0000100000001 /* ShippingImportRead.swift */; };
 		B20000052FA0000100000001 /* ShippingImportAck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000152FA0000100000001 /* ShippingImportAck.swift */; };
 		B20000062FA0000100000001 /* ShippingImportCancel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000162FA0000100000001 /* ShippingImportCancel.swift */; };
@@ -210,6 +211,7 @@
 		B20000112FA0000100000001 /* ShippingImportCommon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShippingImportCommon.swift; sourceTree = "<group>"; };
 		B20000122FA0000100000001 /* ShippingImportBegin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShippingImportBegin.swift; sourceTree = "<group>"; };
 		B20000132FA0000100000001 /* ShippingImportStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShippingImportStatus.swift; sourceTree = "<group>"; };
+		B20000182FA0000100000001 /* ShippingImportActive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShippingImportActive.swift; sourceTree = "<group>"; };
 		B20000142FA0000100000001 /* ShippingImportRead.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShippingImportRead.swift; sourceTree = "<group>"; };
 		B20000152FA0000100000001 /* ShippingImportAck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShippingImportAck.swift; sourceTree = "<group>"; };
 		B20000162FA0000100000001 /* ShippingImportCancel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShippingImportCancel.swift; sourceTree = "<group>"; };
@@ -446,6 +448,7 @@
 				B20000112FA0000100000001 /* ShippingImportCommon.swift */,
 				B20000122FA0000100000001 /* ShippingImportBegin.swift */,
 				B20000132FA0000100000001 /* ShippingImportStatus.swift */,
+				B20000182FA0000100000001 /* ShippingImportActive.swift */,
 				B20000142FA0000100000001 /* ShippingImportRead.swift */,
 				B20000152FA0000100000001 /* ShippingImportAck.swift */,
 				B20000162FA0000100000001 /* ShippingImportCancel.swift */,
@@ -696,6 +699,7 @@
 				B20000012FA0000100000001 /* ShippingImportCommon.swift in Sources */,
 				B20000022FA0000100000001 /* ShippingImportBegin.swift in Sources */,
 				B20000032FA0000100000001 /* ShippingImportStatus.swift in Sources */,
+				B20000082FA0000100000001 /* ShippingImportActive.swift in Sources */,
 				B20000042FA0000100000001 /* ShippingImportRead.swift in Sources */,
 				B20000052FA0000100000001 /* ShippingImportAck.swift in Sources */,
 				B20000062FA0000100000001 /* ShippingImportCancel.swift in Sources */,
