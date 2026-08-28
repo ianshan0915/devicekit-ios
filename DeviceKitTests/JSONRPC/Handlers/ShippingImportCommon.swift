@@ -3,14 +3,29 @@ import Foundation
 /// One inbox per runner process. Constructing an inbox performs stale-request
 /// recovery under the cross-process lock, so rebuilding it for every 512 KiB
 /// read chunk turns a 25 MiB transfer into 50 unnecessary full-container scans.
+///
+/// Only success is cached. A `Result` in a `static let` also pins the *first
+/// failure* for the life of the process, so one transient construction error —
+/// the App Group container unavailable before first unlock, or a filesystem
+/// error inside the init-time purge — would disable shipping for the whole
+/// session. Retrying costs one scan; failing closed costs the session.
 @MainActor
 private enum ShippingInboxProvider {
-    static let result = Result { try ShippingInbox() }
+    private static var cached: ShippingInbox?
+
+    static func shared() throws -> ShippingInbox {
+        if let cached = cached {
+            return cached
+        }
+        let inbox = try ShippingInbox()
+        cached = inbox
+        return inbox
+    }
 }
 
 @MainActor
 func shippingInbox() throws -> ShippingInbox {
-    try ShippingInboxProvider.result.get()
+    try ShippingInboxProvider.shared()
 }
 
 struct ShippingImportRequestID: Decodable {
