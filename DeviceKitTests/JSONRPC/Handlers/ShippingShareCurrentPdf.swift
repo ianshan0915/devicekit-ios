@@ -10,6 +10,7 @@ private enum ShippingShareActionError: String, LocalizedError {
     case missingSafariPDF = "printable_pdf_not_in_safari"
     case missingShareAction = "share_action_not_found"
     case missingExtension = "share_target_not_found"
+    case targetNotOffered = "share_target_not_offered"
     case attachmentRejected = "source_not_pdf"
     case timeout = "share_import_timeout"
     case cancelled = "share_import_cancelled"
@@ -22,6 +23,11 @@ private enum ShippingShareActionError: String, LocalizedError {
             "Safari's Share button is unavailable."
         case .missingExtension:
             "YJ Commerce is missing from the Share sheet."
+        case .targetNotOffered:
+            """
+            The Share sheet opened but did not offer YJ Commerce — the phone may be \
+            missing the shipping Share Extension, or this page is not a PDF.
+            """
         case .attachmentRejected:
             "Safari did not provide a usable PDF shipping label."
         case .timeout:
@@ -79,10 +85,13 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
 
         guard let target = visibleShareTarget(in: sharing)
                 ?? revealShareTarget(in: sharing) else {
-            if hasPDFHint(in: sharing) {
-                throw actionError(.missingExtension)
-            }
-            throw actionError(.missingSafariPDF)
+            // Safari was verified foreground and its Share sheet is open, so
+            // `missingSafariPDF` ("open the label in Safari first") would tell the
+            // operator to redo a step that already succeeded. A PDF hint narrows
+            // this to a missing extension; without one the two causes — extension
+            // absent, or the page is not a PDF — are genuinely indistinguishable
+            // from here, and the error says so rather than guessing.
+            throw actionError(hasPDFHint(in: sharing) ? .missingExtension : .targetNotOffered)
         }
         guard target.isHittable else {
             throw actionError(.missingExtension)

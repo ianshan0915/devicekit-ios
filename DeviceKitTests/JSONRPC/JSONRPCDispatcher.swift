@@ -31,6 +31,7 @@ final class JSONRPCDispatcher {
         registerHandler(IOAppSwitcherMethodHandler())
         registerHandler(ShippingImportBeginMethodHandler())
         registerHandler(ShippingImportStatusMethodHandler())
+        registerHandler(ShippingImportActiveMethodHandler())
         registerHandler(ShippingImportReadMethodHandler())
         registerHandler(ShippingImportAckMethodHandler())
         registerHandler(ShippingImportCancelMethodHandler())

@@ -41,7 +41,7 @@ func shippingRPCError(_ error: Error) -> RPCMethodError {
     return .internalError(error.localizedDescription)
 }
 
-func shippingTerminalJSON(_ terminal: ShippingImportTerminal) -> JSONValue {
+func shippingTerminalFields(_ terminal: ShippingImportTerminal) -> [String: JSONValue] {
     var value: [String: JSONValue] = [
         "requestId": .string(terminal.requestID.uuidString.lowercased()),
         "state": .string(terminal.state.rawValue),
@@ -49,5 +49,32 @@ func shippingTerminalJSON(_ terminal: ShippingImportTerminal) -> JSONValue {
     if let digest = terminal.sha256 {
         value["sha256"] = .string(digest)
     }
-    return .object(value)
+    return value
+}
+
+func shippingTerminalJSON(_ terminal: ShippingImportTerminal) -> JSONValue {
+    .object(shippingTerminalFields(terminal))
+}
+
+/// One rendering of a status, shared by begin/status/active so the three can
+/// never disagree about what a request is doing.
+func shippingStatusFields(_ status: ShippingImportStatus) -> [String: JSONValue] {
+    switch status {
+    case .waiting:
+        return ["state": .string("waiting")]
+    case .ready(let manifest):
+        return [
+            "state": .string("ready"),
+            "totalBytes": .int(manifest.byteCount),
+            "sha256": .string(manifest.sha256),
+        ]
+    case .failed(let failure):
+        return [
+            "state": .string("failed"),
+            "code": .string(failure.code),
+            "message": .string(failure.message),
+        ]
+    case .acknowledged(let terminal), .cancelled(let terminal):
+        return shippingTerminalFields(terminal)
+    }
 }

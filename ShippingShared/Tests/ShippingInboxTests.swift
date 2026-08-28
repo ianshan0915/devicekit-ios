@@ -307,6 +307,76 @@ final class ShippingInboxTests: XCTestCase {
         }
     }
 
+    func testActiveRequestsAreDiscoverableSoALostRequestIDCanBeRecovered() throws {
+        XCTAssertTrue(try inbox.activeRequests().isEmpty)
+
+        let requestID = UUID()
+        try inbox.begin(requestID: requestID, maxBytes: 1024)
+        XCTAssertEqual(try inbox.activeRequests().map(\.requestID), [requestID])
+
+        // A host that lost the id is otherwise locked out until the stale purge.
+        let recovered = try XCTUnwrap(inbox.activeRequests().first)
+        _ = try inbox.cancel(requestID: recovered.requestID)
+
+        XCTAssertTrue(try inbox.activeRequests().isEmpty)
+        XCTAssertNoThrow(try inbox.begin(requestID: UUID(), maxBytes: 1024))
+    }
+
+    func testAcknowledgedRequestIsNotReportedAsActive() throws {
+        let requestID = UUID()
+        let source = root.appendingPathComponent("fixture.pdf")
+        try Data("%PDF-1.7\nactive\n%%EOF".utf8).write(to: source)
+        try inbox.begin(requestID: requestID, maxBytes: 1024)
+        let manifest = try inbox.importPDF(from: source)
+        XCTAssertEqual(try inbox.activeRequests().map(\.requestID), [requestID])
+
+        _ = try inbox.acknowledge(requestID: requestID, sha256: manifest.sha256)
+        XCTAssertTrue(try inbox.activeRequests().isEmpty)
+    }
+
+    func testTornRequestFileDoesNotWedgeTheInbox() throws {
+        let requestID = UUID()
+        try inbox.begin(requestID: requestID, maxBytes: 1024)
+        let requestFile = root
+            .appendingPathComponent("Requests", isDirectory: true)
+            .appendingPathComponent(requestID.uuidString.lowercased() + ".json")
+        try Data("{ truncated".utf8).write(to: requestFile)
+
+        // init purges, and every RPC constructs a fresh inbox: a throw here used
+        // to fail the constructor and lock the feature out permanently.
+        let restarted = try ShippingInbox(
+            rootURL: root,
+            now: { Date(timeIntervalSince1970: 1_800_000_000) }
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: requestFile.path))
+        XCTAssertTrue(try restarted.activeRequests().isEmpty)
+        XCTAssertNoThrow(try restarted.begin(requestID: UUID(), maxBytes: 1024))
+    }
+
+    func testTornTerminalReceiptKeepsTheRequestVisibleInsteadOfWedging() throws {
+        let requestID = UUID()
+        try inbox.begin(requestID: requestID, maxBytes: 1024)
+        // A crash between writing the receipt and clearing the request file leaves
+        // both on disk; corrupt the receipt to simulate the torn write.
+        let importDirectory = root
+            .appendingPathComponent("Imports", isDirectory: true)
+            .appendingPathComponent(requestID.uuidString.lowercased(), isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: importDirectory,
+            withIntermediateDirectories: true
+        )
+        try Data("{ truncated".utf8).write(
+            to: importDirectory.appendingPathComponent("terminal.json")
+        )
+
+        let restarted = try ShippingInbox(
+            rootURL: root,
+            now: { Date(timeIntervalSince1970: 1_800_000_000) }
+        )
+        // Fail safe: still visible and cancellable, rather than unopenable.
+        XCTAssertEqual(try restarted.activeRequests().map(\.requestID), [requestID])
+    }
+
     func testInitializationPurgesRequestsOlderThanRetentionWindow() throws {
         let clock = MutableClock(Date(timeIntervalSince1970: 1_800_000_000))
         let first = try ShippingInbox(rootURL: root, now: { clock.value })
@@ -387,6 +457,44 @@ final class ShippingInboxTests: XCTestCase {
                 )
             )
         )
+    }
+
+    func testImportThatBlocksAfterClaimingStillTimesOut() async throws {
+        let release = DispatchSemaphore(value: 0)
+        let lateCompletionReturned = expectation(
+            description: "the blocked import finishes after the deadline"
+        )
+
+        do {
+            _ = try await awaitShippingImport(timeoutSeconds: 0.05) { claim, completion in
+                DispatchQueue.global().async {
+                    guard claim() else { return }
+                    // A copy that blocks after claiming — slow provider, or the inbox
+                    // lock held by a wedged peer. This used to be unreachable by the
+                    // deadline, leaving the continuation suspended forever.
+                    release.wait()
+                    completion(
+                        .success(
+                            ShippingImportManifest(
+                                requestID: UUID(),
+                                byteCount: 1,
+                                sha256: "late",
+                                createdAt: Date()
+                            )
+                        )
+                    )
+                    lateCompletionReturned.fulfill()
+                }
+                return nil
+            }
+            XCTFail("Expected extension timeout")
+        } catch {
+            XCTAssertEqual(error as? ShippingInboxError, .extensionTimeout)
+        }
+
+        // Completing afterwards must be dropped, not resume the continuation twice.
+        release.signal()
+        await fulfillment(of: [lateCompletionReturned], timeout: 2)
     }
 
     func testShareExtensionIsOfferedForOnePDFAcrossSafariItems() throws {
