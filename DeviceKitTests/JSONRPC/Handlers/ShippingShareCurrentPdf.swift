@@ -313,7 +313,12 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
     }
 
     private func hasPDFHint(in sharing: XCUIApplication) -> Bool {
-        sharing.staticTexts.matching(
+        // Share-sheet attachment metadata is not consistently typed. On the
+        // tested Vinted/iOS combination, "PDF Document · 20 KB" is an
+        // XCUIElementTypeOther rather than a static text even though it has an
+        // accessibility label. Search the complete accessibility tree while
+        // retaining the semantic PDF requirement.
+        sharing.descendants(matching: .any).matching(
             NSPredicate(format: "label CONTAINS[c] %@", "PDF")
         ).firstMatch.exists
     }
