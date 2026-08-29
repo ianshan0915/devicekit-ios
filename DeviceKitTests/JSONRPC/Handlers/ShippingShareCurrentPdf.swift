@@ -4,6 +4,7 @@ import XCTest
 private struct ShippingShareCurrentPDFRequest: Decodable {
     let requestId: String
     let timeoutSeconds: Double?
+    let sourceBundleId: String?
 }
 
 private enum ShippingShareActionError: String, LocalizedError {
@@ -20,7 +21,7 @@ private enum ShippingShareActionError: String, LocalizedError {
         case .missingSafariPDF:
             "Open the printable shipping label in Safari first."
         case .missingShareAction:
-            "Safari's Share button is unavailable."
+            "The printable PDF Share action is unavailable."
         case .missingExtension:
             "YJ Commerce is missing from the Share sheet."
         case .targetNotOffered:
@@ -29,7 +30,7 @@ private enum ShippingShareActionError: String, LocalizedError {
             missing the shipping Share Extension, or this page is not a PDF.
             """
         case .attachmentRejected:
-            "Safari did not provide a usable PDF shipping label."
+            "The source app did not provide a usable PDF shipping label."
         case .timeout:
             "Saving the shipping label took too long."
         case .cancelled:
@@ -72,25 +73,66 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
             throw shippingRPCError(error)
         }
 
-        guard let safari = foregroundSafari() else {
-            throw actionError(.missingSafariPDF)
-        }
-        guard openShareSheet(in: safari) else {
-            throw actionError(.missingShareAction)
+        let sourceBundleID = request.sourceBundleId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sourceIsNonSafari = sourceBundleID.map {
+            !$0.isEmpty && !Self.safariBundleIDs.contains($0)
+        } ?? false
+        // Resolved once: `activeAppsInfo()` is not cheap, and the probe below
+        // needs the same reading this gate is based on.
+        let entryForegroundBundleID = RunningApp.getForegroundApp()?.bundleID
+        let foregroundIsSafari = entryForegroundBundleID.map {
+            Self.safariBundleIDs.contains($0)
+        } ?? false
+
+        let sharing: XCUIApplication
+        // The established Safari path opens its own sheet below. Probing for a
+        // pre-presented sheet first can never help when Safari is foreground,
+        // and used to burn four seconds on the main actor every invocation.
+        if !foregroundIsSafari,
+           let presented = try await presentedPDFShareSheet(
+               sourceBundleID: sourceBundleID,
+               foregroundBundleID: entryForegroundBundleID
+           ) {
+            // Vinted's in-app PDF viewer owns the Share button. The host opens
+            // that one deterministic toolbar action, then this runner selects
+            // the exact extension element. Keeping the Share-sheet operation
+            // here avoids exporting unreliable system rectangles to the host.
+            sharing = presented
+        } else {
+            // Re-read the foreground app rather than reusing the entry
+            // reading: the probe above can wait several seconds, and a sheet
+            // caught mid-presentation settles back onto its host app in that
+            // window.
+            guard let safari = foregroundSafari() else {
+                // A caller that named Vinted (or another source app) is asking
+                // us to use an already-presented in-app sheet, so "open the
+                // label in Safari first" would name an app the operator never
+                // opened. Only the guidance changes here: a source app that
+                // hands its PDF to SFSafariViewController still reaches the
+                // Safari path above.
+                throw actionError(sourceIsNonSafari ? .missingShareAction : .missingSafariPDF)
+            }
+            guard try await openShareSheet(in: safari) else {
+                throw actionError(.missingShareAction)
+            }
+
+            guard let opened = shareSheetContext(openedFrom: safari) else {
+                throw actionError(.missingShareAction)
+            }
+            sharing = opened
         }
 
-        guard let sharing = shareSheetContext(openedFrom: safari) else {
-            throw actionError(.missingShareAction)
+        let target: XCUIElement?
+        if let visible = try await waitForVisibleShareTarget(in: sharing, timeout: 2) {
+            target = visible
+        } else {
+            target = try await revealShareTarget(in: sharing)
         }
-
-        guard let target = visibleShareTarget(in: sharing)
-                ?? revealShareTarget(in: sharing) else {
-            // Safari was verified foreground and its Share sheet is open, so
-            // `missingSafariPDF` ("open the label in Safari first") would tell the
-            // operator to redo a step that already succeeded. A PDF hint narrows
-            // this to a missing extension; without one the two causes — extension
-            // absent, or the page is not a PDF — are genuinely indistinguishable
-            // from here, and the error says so rather than guessing.
+        guard let target else {
+            // A source-app or Safari Share sheet is already open, so telling
+            // the operator to reopen the label would be wrong. A PDF hint
+            // narrows this to a missing extension; without one the two causes
+            // remain genuinely indistinguishable.
             throw actionError(hasPDFHint(in: sharing) ? .missingExtension : .targetNotOffered)
         }
         guard target.isHittable else {
@@ -144,6 +186,52 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
         return nil
     }
 
+    private func presentedPDFShareSheet(
+        sourceBundleID: String?,
+        foregroundBundleID: String?
+    ) async throws -> XCUIApplication? {
+        // The host captures the source bundle before opening an in-app Share
+        // sheet. Query that exact hierarchy first: while the sheet is visible,
+        // iOS may temporarily classify SpringBoard rather than the source app
+        // as foreground.
+        var bundleIDs: [String] = []
+        if let sourceBundleID, !sourceBundleID.isEmpty {
+            bundleIDs.append(sourceBundleID)
+        }
+        bundleIDs.append("com.apple.SharingViewService")
+        // Backward compatibility for callers that predate sourceBundleId and
+        // for iOS versions that do keep the source app foreground.
+        if let foregroundBundleID,
+           foregroundBundleID != RunningApp.springboardBundleId {
+            bundleIDs.append(foregroundBundleID)
+        }
+
+        var seen = Set<String>()
+        let candidates = bundleIDs.compactMap { bundleID -> XCUIApplication? in
+            guard seen.insert(bundleID).inserted,
+                  !Self.safariBundleIDs.contains(bundleID),
+                  bundleID != Bundle.main.bundleIdentifier else {
+                return nil
+            }
+            return XCUIApplication(bundleIdentifier: bundleID)
+        }
+
+        // The attachment and application cells can take several seconds to
+        // enter the XCUI hierarchy on older phones. Require both the PDF signal
+        // and an activity row, so unrelated content containing the text "PDF"
+        // cannot authorize sharing arbitrary content.
+        let deadline = Date().addingTimeInterval(4)
+        while true {
+            for candidate in candidates where isPDFShareSheet(candidate) {
+                return candidate
+            }
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 { break }
+            try await cooperativeSleep(min(0.2, remaining))
+        }
+        return nil
+    }
+
     private func foregroundSafari() -> XCUIApplication? {
         guard let foreground = RunningApp.getForegroundApp(),
               let bundleID = foreground.bundleID,
@@ -153,7 +241,7 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
         return foreground
     }
 
-    private func openShareSheet(in safari: XCUIApplication) -> Bool {
+    private func openShareSheet(in safari: XCUIApplication) async throws -> Bool {
         if openVisibleShareAction(in: safari) {
             return true
         }
@@ -163,7 +251,7 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
         // the controls, then re-query them. This remains element-driven; never
         // guess a screen coordinate.
         guard revealPDFControls(in: safari) else { return false }
-        Thread.sleep(forTimeInterval: 0.25)
+        try await cooperativeSleep(0.25)
         return openVisibleShareAction(in: safari)
     }
 
@@ -219,11 +307,29 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
         return nil
     }
 
-    private func revealShareTarget(in sharing: XCUIApplication) -> XCUIElement? {
+    private func waitForVisibleShareTarget(
+        in sharing: XCUIApplication,
+        timeout: TimeInterval
+    ) async throws -> XCUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if let target = visibleShareTarget(in: sharing) {
+                return target
+            }
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 { break }
+            try await cooperativeSleep(min(0.2, remaining))
+        }
+        return nil
+    }
+
+    private func revealShareTarget(
+        in sharing: XCUIApplication
+    ) async throws -> XCUIElement? {
         guard let row = applicationRow(in: sharing) else { return nil }
         for _ in 0..<Self.maximumApplicationRowSwipes {
             row.swipeLeft()
-            Thread.sleep(forTimeInterval: 0.2)
+            try await cooperativeSleep(0.2)
             if let target = visibleShareTarget(in: sharing) {
                 return target
             }
@@ -248,9 +354,27 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
     }
 
     private func hasPDFHint(in sharing: XCUIApplication) -> Bool {
-        sharing.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS[c] %@", "PDF")
-        ).firstMatch.exists
+        // Share-sheet attachment metadata is not consistently typed. On the
+        // tested Vinted/iOS combination, "PDF Document · 20 KB" is an
+        // XCUIElementTypeOther rather than a static text even though it has an
+        // accessibility label. Limit the search to the two observed element
+        // types; a descendants(.any) snapshot of Vinted's full hierarchy can
+        // take seconds on older phones and defeat the bounded polling loop.
+        let predicate = NSPredicate(format: "label CONTAINS[c] %@", "PDF")
+        return [sharing.staticTexts, sharing.otherElements].contains { query in
+            query.matching(predicate).firstMatch.exists
+        }
+    }
+
+    private func isPDFShareSheet(_ sharing: XCUIApplication) -> Bool {
+        guard hasPDFHint(in: sharing) else { return false }
+        return sharing.cells.matching(identifier: "shareCell").firstMatch.exists
+            || visibleShareTarget(in: sharing) != nil
+    }
+
+    private func cooperativeSleep(_ seconds: TimeInterval) async throws {
+        guard seconds > 0 else { return }
+        try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     }
 
     private func firstElement(
