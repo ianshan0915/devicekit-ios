@@ -93,7 +93,7 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
             sharing = opened
         }
 
-        guard let target = visibleShareTarget(in: sharing)
+        guard let target = waitForVisibleShareTarget(in: sharing, timeout: 2)
                 ?? revealShareTarget(in: sharing) else {
             // Safari was verified foreground and its Share sheet is open, so
             // `missingSafariPDF` ("open the label in Safari first") would tell the
@@ -160,10 +160,15 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
         // query its live element tree before looking for a separate service.
         if let foreground = RunningApp.getForegroundApp(),
            let bundleID = foreground.bundleID,
-           !Self.safariBundleIDs.contains(bundleID),
-           foreground.cells.firstMatch.waitForExistence(timeout: 1),
-           hasPDFHint(in: foreground) {
-            return foreground
+           !Self.safariBundleIDs.contains(bundleID) {
+            // Vinted animates the activity controller into its own process.
+            // The app is foreground immediately, but its PDF attachment and
+            // application cells can take several seconds to enter the XCUI
+            // hierarchy on older phones. Wait for the semantic PDF signal
+            // instead of racing that animation or relying on coordinates.
+            if waitForPDFHint(in: foreground, timeout: 4) {
+                return foreground
+            }
         }
 
         let sharing = XCUIApplication(bundleIdentifier: "com.apple.SharingViewService")
@@ -252,6 +257,20 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
         return nil
     }
 
+    private func waitForVisibleShareTarget(
+        in sharing: XCUIApplication,
+        timeout: TimeInterval
+    ) -> XCUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if let target = visibleShareTarget(in: sharing) {
+                return target
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        } while Date() < deadline
+        return nil
+    }
+
     private func revealShareTarget(in sharing: XCUIApplication) -> XCUIElement? {
         guard let row = applicationRow(in: sharing) else { return nil }
         for _ in 0..<Self.maximumApplicationRowSwipes {
@@ -284,6 +303,15 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
         sharing.staticTexts.matching(
             NSPredicate(format: "label CONTAINS[c] %@", "PDF")
         ).firstMatch.exists
+    }
+
+    private func waitForPDFHint(
+        in sharing: XCUIApplication,
+        timeout: TimeInterval
+    ) -> Bool {
+        sharing.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS[c] %@", "PDF")
+        ).firstMatch.waitForExistence(timeout: timeout)
     }
 
     private func firstElement(
