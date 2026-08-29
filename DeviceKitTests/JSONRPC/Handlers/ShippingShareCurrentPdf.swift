@@ -77,7 +77,10 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
         let sourceIsNonSafari = sourceBundleID.map {
             !$0.isEmpty && !Self.safariBundleIDs.contains($0)
         } ?? false
-        let foregroundIsSafari = RunningApp.getForegroundApp()?.bundleID.map {
+        // Resolved once: `activeAppsInfo()` is not cheap, and the probe below
+        // needs the same reading this gate is based on.
+        let entryForegroundBundleID = RunningApp.getForegroundApp()?.bundleID
+        let foregroundIsSafari = entryForegroundBundleID.map {
             Self.safariBundleIDs.contains($0)
         } ?? false
 
@@ -86,22 +89,28 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
         // pre-presented sheet first can never help when Safari is foreground,
         // and used to burn four seconds on the main actor every invocation.
         if !foregroundIsSafari,
-           let presented = try await presentedPDFShareSheet(sourceBundleID: sourceBundleID) {
+           let presented = try await presentedPDFShareSheet(
+               sourceBundleID: sourceBundleID,
+               foregroundBundleID: entryForegroundBundleID
+           ) {
             // Vinted's in-app PDF viewer owns the Share button. The host opens
             // that one deterministic toolbar action, then this runner selects
             // the exact extension element. Keeping the Share-sheet operation
             // here avoids exporting unreliable system rectangles to the host.
             sharing = presented
         } else {
-            // A caller that named Vinted (or another source app) is explicitly
-            // asking us to use an already-presented in-app sheet. Falling back
-            // to Safari here gives the operator instructions for an app they
-            // never opened.
-            if sourceIsNonSafari {
-                throw actionError(.missingShareAction)
-            }
+            // Re-read the foreground app rather than reusing the entry
+            // reading: the probe above can wait several seconds, and a sheet
+            // caught mid-presentation settles back onto its host app in that
+            // window.
             guard let safari = foregroundSafari() else {
-                throw actionError(.missingSafariPDF)
+                // A caller that named Vinted (or another source app) is asking
+                // us to use an already-presented in-app sheet, so "open the
+                // label in Safari first" would name an app the operator never
+                // opened. Only the guidance changes here: a source app that
+                // hands its PDF to SFSafariViewController still reaches the
+                // Safari path above.
+                throw actionError(sourceIsNonSafari ? .missingShareAction : .missingSafariPDF)
             }
             guard try await openShareSheet(in: safari) else {
                 throw actionError(.missingShareAction)
@@ -178,7 +187,8 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
     }
 
     private func presentedPDFShareSheet(
-        sourceBundleID: String?
+        sourceBundleID: String?,
+        foregroundBundleID: String?
     ) async throws -> XCUIApplication? {
         // The host captures the source bundle before opening an in-app Share
         // sheet. Query that exact hierarchy first: while the sheet is visible,
@@ -191,7 +201,7 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
         bundleIDs.append("com.apple.SharingViewService")
         // Backward compatibility for callers that predate sourceBundleId and
         // for iOS versions that do keep the source app foreground.
-        if let foregroundBundleID = RunningApp.getForegroundApp()?.bundleID,
+        if let foregroundBundleID,
            foregroundBundleID != RunningApp.springboardBundleId {
             bundleIDs.append(foregroundBundleID)
         }
