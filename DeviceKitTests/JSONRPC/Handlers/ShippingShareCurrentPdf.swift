@@ -155,6 +155,17 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
     }
 
     private func presentedPDFShareSheet() -> XCUIApplication? {
+        // Some iOS versions keep UIActivityViewController inside the source
+        // process. Vinted remains foreground in that presentation style, so
+        // query its live element tree before looking for a separate service.
+        if let foreground = RunningApp.getForegroundApp(),
+           let bundleID = foreground.bundleID,
+           !Self.safariBundleIDs.contains(bundleID),
+           foreground.cells.firstMatch.waitForExistence(timeout: 1),
+           hasPDFHint(in: foreground) {
+            return foreground
+        }
+
         let sharing = XCUIApplication(bundleIdentifier: "com.apple.SharingViewService")
         guard sharing.wait(for: .runningForeground, timeout: 2)
                 || sharing.cells.firstMatch.waitForExistence(timeout: 1) else {
