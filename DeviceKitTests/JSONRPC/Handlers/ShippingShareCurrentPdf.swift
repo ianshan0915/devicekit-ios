@@ -72,15 +72,25 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
             throw shippingRPCError(error)
         }
 
-        guard let safari = foregroundSafari() else {
-            throw actionError(.missingSafariPDF)
-        }
-        guard openShareSheet(in: safari) else {
-            throw actionError(.missingShareAction)
-        }
+        let sharing: XCUIApplication
+        if let presented = presentedPDFShareSheet() {
+            // Vinted's in-app PDF viewer owns the Share button. The host opens
+            // that one deterministic toolbar action, then this runner selects
+            // the exact extension element. Keeping the Share-sheet operation
+            // here avoids exporting unreliable system rectangles to the host.
+            sharing = presented
+        } else {
+            guard let safari = foregroundSafari() else {
+                throw actionError(.missingSafariPDF)
+            }
+            guard openShareSheet(in: safari) else {
+                throw actionError(.missingShareAction)
+            }
 
-        guard let sharing = shareSheetContext(openedFrom: safari) else {
-            throw actionError(.missingShareAction)
+            guard let opened = shareSheetContext(openedFrom: safari) else {
+                throw actionError(.missingShareAction)
+            }
+            sharing = opened
         }
 
         guard let target = visibleShareTarget(in: sharing)
@@ -142,6 +152,18 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
             return safari
         }
         return nil
+    }
+
+    private func presentedPDFShareSheet() -> XCUIApplication? {
+        let sharing = XCUIApplication(bundleIdentifier: "com.apple.SharingViewService")
+        guard sharing.wait(for: .runningForeground, timeout: 2)
+                || sharing.cells.firstMatch.waitForExistence(timeout: 1) else {
+            return nil
+        }
+        // An active import request alone must not authorize sharing arbitrary
+        // content. Only reuse an already-presented system sheet that identifies
+        // its attachment as a PDF.
+        return hasPDFHint(in: sharing) ? sharing : nil
     }
 
     private func foregroundSafari() -> XCUIApplication? {
