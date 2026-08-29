@@ -30,7 +30,7 @@ private enum ShippingShareActionError: String, LocalizedError {
             missing the shipping Share Extension, or this page is not a PDF.
             """
         case .attachmentRejected:
-            "Safari did not provide a usable PDF shipping label."
+            "The source app did not provide a usable PDF shipping label."
         case .timeout:
             "Saving the shipping label took too long."
         case .cancelled:
@@ -96,12 +96,10 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
 
         guard let target = waitForVisibleShareTarget(in: sharing, timeout: 2)
                 ?? revealShareTarget(in: sharing) else {
-            // Safari was verified foreground and its Share sheet is open, so
-            // `missingSafariPDF` ("open the label in Safari first") would tell the
-            // operator to redo a step that already succeeded. A PDF hint narrows
-            // this to a missing extension; without one the two causes — extension
-            // absent, or the page is not a PDF — are genuinely indistinguishable
-            // from here, and the error says so rather than guessing.
+            // A source-app or Safari Share sheet is already open, so telling
+            // the operator to reopen the label would be wrong. A PDF hint
+            // narrows this to a missing extension; without one the two causes
+            // remain genuinely indistinguishable.
             throw actionError(hasPDFHint(in: sharing) ? .missingExtension : .targetNotOffered)
         }
         guard target.isHittable else {
@@ -156,17 +154,21 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
     }
 
     private func presentedPDFShareSheet(sourceBundleID: String?) -> XCUIApplication? {
-        // Depending on iOS version and presentation state, activeAppsInfo may
-        // report Vinted, SharingViewService, or even SpringBoard as foreground
-        // while the same UIActivityViewController remains attached to Vinted's
-        // accessibility hierarchy. Search every active context rather than
-        // assuming the foreground classification identifies the owner.
-        var bundleIDs = XCUIApplication.activeAppsInfo().compactMap {
-            $0["bundleId"] as? String
-        }
-        bundleIDs.insert("com.apple.SharingViewService", at: 0)
-        if let sourceBundleID, !sourceBundleID.isEmpty {
+        // The host captures the source bundle before opening an in-app Share
+        // sheet. Query that exact hierarchy first: while the sheet is visible,
+        // iOS may temporarily classify SpringBoard rather than the source app
+        // as foreground.
+        var bundleIDs = ["com.apple.SharingViewService"]
+        if let sourceBundleID, !sourceBundleID.isEmpty,
+           !Self.safariBundleIDs.contains(sourceBundleID) {
             bundleIDs.insert(sourceBundleID, at: 0)
+        }
+        // Backward compatibility for callers that predate sourceBundleId and
+        // for iOS versions that do keep the source app foreground.
+        if let foregroundBundleID = RunningApp.getForegroundApp()?.bundleID,
+           foregroundBundleID != RunningApp.springboardBundleId,
+           !Self.safariBundleIDs.contains(foregroundBundleID) {
+            bundleIDs.append(foregroundBundleID)
         }
 
         var seen = Set<String>()
@@ -179,12 +181,10 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
             return XCUIApplication(bundleIdentifier: bundleID)
         }
 
-        // Vinted animates the activity controller into its own process. Its
-        // PDF attachment and application cells can take several seconds to
-        // enter the XCUI hierarchy on older phones. Poll all candidate owners
-        // for a bounded period and require both the PDF signal and an activity
-        // row, so an unrelated app containing the text "PDF" cannot authorize
-        // sharing arbitrary content.
+        // The attachment and application cells can take several seconds to
+        // enter the XCUI hierarchy on older phones. Require both the PDF signal
+        // and an activity row, so unrelated content containing the text "PDF"
+        // cannot authorize sharing arbitrary content.
         let deadline = Date().addingTimeInterval(4)
         repeat {
             for candidate in candidates where isPDFShareSheet(candidate) {
