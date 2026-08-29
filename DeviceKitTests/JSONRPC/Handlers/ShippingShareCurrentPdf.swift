@@ -155,31 +155,40 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
     }
 
     private func presentedPDFShareSheet() -> XCUIApplication? {
-        // Some iOS versions keep UIActivityViewController inside the source
-        // process. Vinted remains foreground in that presentation style, so
-        // query its live element tree before looking for a separate service.
-        if let foreground = RunningApp.getForegroundApp(),
-           let bundleID = foreground.bundleID,
-           !Self.safariBundleIDs.contains(bundleID) {
-            // Vinted animates the activity controller into its own process.
-            // The app is foreground immediately, but its PDF attachment and
-            // application cells can take several seconds to enter the XCUI
-            // hierarchy on older phones. Wait for the semantic PDF signal
-            // instead of racing that animation or relying on coordinates.
-            if waitForPDFHint(in: foreground, timeout: 4) {
-                return foreground
+        // Depending on iOS version and presentation state, activeAppsInfo may
+        // report Vinted, SharingViewService, or even SpringBoard as foreground
+        // while the same UIActivityViewController remains attached to Vinted's
+        // accessibility hierarchy. Search every active context rather than
+        // assuming the foreground classification identifies the owner.
+        var bundleIDs = XCUIApplication.activeAppsInfo().compactMap {
+            $0["bundleId"] as? String
+        }
+        bundleIDs.insert("com.apple.SharingViewService", at: 0)
+
+        var seen = Set<String>()
+        let candidates = bundleIDs.compactMap { bundleID -> XCUIApplication? in
+            guard seen.insert(bundleID).inserted,
+                  !Self.safariBundleIDs.contains(bundleID),
+                  bundleID != Bundle.main.bundleIdentifier else {
+                return nil
             }
+            return XCUIApplication(bundleIdentifier: bundleID)
         }
 
-        let sharing = XCUIApplication(bundleIdentifier: "com.apple.SharingViewService")
-        guard sharing.wait(for: .runningForeground, timeout: 2)
-                || sharing.cells.firstMatch.waitForExistence(timeout: 1) else {
-            return nil
-        }
-        // An active import request alone must not authorize sharing arbitrary
-        // content. Only reuse an already-presented system sheet that identifies
-        // its attachment as a PDF.
-        return hasPDFHint(in: sharing) ? sharing : nil
+        // Vinted animates the activity controller into its own process. Its
+        // PDF attachment and application cells can take several seconds to
+        // enter the XCUI hierarchy on older phones. Poll all candidate owners
+        // for a bounded period and require both the PDF signal and an activity
+        // row, so an unrelated app containing the text "PDF" cannot authorize
+        // sharing arbitrary content.
+        let deadline = Date().addingTimeInterval(4)
+        repeat {
+            for candidate in candidates where isPDFShareSheet(candidate) {
+                return candidate
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        } while Date() < deadline
+        return nil
     }
 
     private func foregroundSafari() -> XCUIApplication? {
@@ -305,13 +314,10 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
         ).firstMatch.exists
     }
 
-    private func waitForPDFHint(
-        in sharing: XCUIApplication,
-        timeout: TimeInterval
-    ) -> Bool {
-        sharing.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS[c] %@", "PDF")
-        ).firstMatch.waitForExistence(timeout: timeout)
+    private func isPDFShareSheet(_ sharing: XCUIApplication) -> Bool {
+        guard hasPDFHint(in: sharing) else { return false }
+        return sharing.cells.matching(identifier: "shareCell").firstMatch.exists
+            || visibleShareTarget(in: sharing) != nil
     }
 
     private func firstElement(
