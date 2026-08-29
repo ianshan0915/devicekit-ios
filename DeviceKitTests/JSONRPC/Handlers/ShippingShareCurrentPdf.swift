@@ -4,6 +4,7 @@ import XCTest
 private struct ShippingShareCurrentPDFRequest: Decodable {
     let requestId: String
     let timeoutSeconds: Double?
+    let sourceBundleId: String?
 }
 
 private enum ShippingShareActionError: String, LocalizedError {
@@ -73,7 +74,7 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
         }
 
         let sharing: XCUIApplication
-        if let presented = presentedPDFShareSheet() {
+        if let presented = presentedPDFShareSheet(sourceBundleID: request.sourceBundleId) {
             // Vinted's in-app PDF viewer owns the Share button. The host opens
             // that one deterministic toolbar action, then this runner selects
             // the exact extension element. Keeping the Share-sheet operation
@@ -154,7 +155,7 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
         return nil
     }
 
-    private func presentedPDFShareSheet() -> XCUIApplication? {
+    private func presentedPDFShareSheet(sourceBundleID: String?) -> XCUIApplication? {
         // Depending on iOS version and presentation state, activeAppsInfo may
         // report Vinted, SharingViewService, or even SpringBoard as foreground
         // while the same UIActivityViewController remains attached to Vinted's
@@ -164,6 +165,9 @@ struct ShippingShareCurrentPdfMethodHandler: RPCMethodHandler {
             $0["bundleId"] as? String
         }
         bundleIDs.insert("com.apple.SharingViewService", at: 0)
+        if let sourceBundleID, !sourceBundleID.isEmpty {
+            bundleIDs.insert(sourceBundleID, at: 0)
+        }
 
         var seen = Set<String>()
         let candidates = bundleIDs.compactMap { bundleID -> XCUIApplication? in
